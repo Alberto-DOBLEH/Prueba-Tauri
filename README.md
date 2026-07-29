@@ -41,17 +41,57 @@ Tauri vive en `Frontend/src-tauri`. En desarrollo, Tauri abre una ventana nativa
 
 En build, Tauri ejecuta `npm run build`, toma los archivos estaticos de `Frontend/dist` y los incrusta en la aplicacion de escritorio. El backend se mantiene como proceso local separado en este ejemplo, por lo que antes de abrir la app empaquetada debes tener el backend iniciado o configurarlo como servicio local.
 
-## Empaquetar RPM
+## Empaquetar Linux RPM
 
 Con el backend probado y desde `Frontend`:
 
 ```bash
-npm run tauri:build
+npm run tauri:build:linux
 ```
 
 El RPM se genera en una ruta similar a:
 
 `Frontend/src-tauri/target/release/bundle/rpm/`
+
+## Adaptacion para Windows
+
+Esta version ya tiene scripts separados para Linux y Windows. Lo recomendado es subir estos cambios a una branch, por ejemplo:
+
+```bash
+git checkout -b windows-build
+git add .
+git commit -m "Agregar configuracion de build para Windows"
+git push -u origin windows-build
+```
+
+En Windows no necesitas cambiar el codigo principal. Desde la VM Windows clonas esa branch, instalas dependencias y generas instaladores.
+
+Instaladores disponibles desde `Frontend`:
+
+```bash
+npm run tauri:build:windows
+```
+
+Ese comando intenta generar ambos formatos: `.exe` con NSIS y `.msi`.
+
+Si quieres solo EXE:
+
+```bash
+npm run tauri:build:windows:exe
+```
+
+Si quieres solo MSI:
+
+```bash
+npm run tauri:build:windows:msi
+```
+
+Las salidas quedan normalmente en:
+
+- `Frontend/src-tauri/target/release/bundle/nsis/`
+- `Frontend/src-tauri/target/release/bundle/msi/`
+
+Importante: el instalador de Tauri empaqueta la app de escritorio, pero en este proyecto el backend Express sigue siendo un proceso local separado. Para produccion Windows hay dos opciones futuras: correr el backend con Node instalado, o integrar/arrancar el backend como sidecar de Tauri.
 
 ## Impresion y PDFs
 
