@@ -1,0 +1,16 @@
+node modules/
+Backend/node_modules/
+Frontend/node_modules/
+
+dist/
+Frontend/dist/
+
+target/
+Frontend/src-tauri/target/
+
+*.log
+.env
+
+BD/*.sqlite
+BD/*.sqlite-shm
+BD/*.sqlite-wal

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "POS Local",
+  "version": "1.0.0",
+  "identifier": "com.pruebas.poslocal",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "POS Local",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 650
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src http://localhost:3001 http://127.0.0.1:3001; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["rpm"],
+    "icon": ["icons/icon.png"],
+    "category": "Business"
+  }
+}

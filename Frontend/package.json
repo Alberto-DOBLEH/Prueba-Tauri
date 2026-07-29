@@ -1,0 +1,25 @@
+{
+  "name": "pos-frontend-tauri",
+  "version": "1.0.0",
+  "description": "Frontend React y contenedor Tauri para punto de venta local.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --bundles rpm"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jspdf": "^2.5.2",
+    "vite": "^6.0.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.5"
+  }
+}
