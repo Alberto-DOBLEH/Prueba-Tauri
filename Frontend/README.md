@@ -102,3 +102,50 @@ npm run tauri:dev
 El `.exe` generado por NSIS suele ser mas practico para instalacion sencilla. El `.msi` es util si se quiere distribuir con politicas empresariales o administracion centralizada.
 
 El backend Express no se instala automaticamente como servicio en esta version. La app Tauri instalada espera encontrar el backend en `http://localhost:3001`.
+
+## Impresion en Windows
+
+La app tiene dos caminos de impresion cuando se ejecuta como Tauri en Windows.
+
+### Tickets ESC/POS
+
+Los tickets se generan como bytes ESC/POS desde el frontend y se mandan a un comando Tauri llamado `print_escpos_windows`. Ese comando escribe un archivo temporal `.escpos` y ejecuta:
+
+```cmd
+copy /B ticket.escpos \\localhost\NOMBRE_IMPRESORA
+```
+
+Requisitos:
+
+- La impresora debe ser termica compatible con ESC/POS.
+- La impresora debe estar compartida en Windows.
+- En `Administracion > Impresion Windows` debes poner el nombre compartido, por ejemplo `POS58`.
+- Tambien puedes usar una ruta UNC completa como `\\CAJA\POS58`.
+
+Para compartir la impresora en Windows:
+
+1. Abre `Configuracion > Bluetooth y dispositivos > Impresoras y escaneres`.
+2. Selecciona la impresora termica.
+3. Entra a propiedades de impresora.
+4. Activa `Compartir esta impresora`.
+5. Define un nombre corto, por ejemplo `POS58`.
+
+Si no se configura impresora compartida, la app usa el fallback visual de impresion de ticket con `window.print()`.
+
+### PDFs de cotizaciones y reportes
+
+Las cotizaciones y reportes se generan con `jsPDF`. En Tauri/Windows, si esta activa la opcion `Imprimir PDFs automaticamente con Windows`, la app manda los bytes PDF al comando `print_pdf_windows`.
+
+Ese comando guarda un PDF temporal y ejecuta PowerShell con:
+
+```powershell
+Start-Process -FilePath "archivo.pdf" -Verb Print -WindowStyle Hidden
+```
+
+Requisitos:
+
+- Windows debe tener una app predeterminada para abrir PDF.
+- Esa app debe soportar la accion `Print`.
+- Debe existir una impresora predeterminada configurada en Windows.
+
+Si falla la impresion automatica o se ejecuta en navegador/Linux, la app descarga el PDF como antes.

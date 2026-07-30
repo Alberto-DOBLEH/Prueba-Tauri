@@ -1,4 +1,4 @@
-node modules/
+node_modules/
 Backend/node_modules/
 Frontend/node_modules/
 

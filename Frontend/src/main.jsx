@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { invoke } from '@tauri-apps/api/core';
 import jsPDF from 'jspdf';
 import './styles.css';
 
 const API = 'http://localhost:3001/api';
 const currency = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' });
+const isTauri = () => Boolean(window.__TAURI_INTERNALS__);
+const defaultPrintSettings = { thermalPrinterShare: '', autoPrintPdf: true };
 
 async function request(path, options) {
   const response = await fetch(`${API}${path}`, {
@@ -18,8 +21,15 @@ async function request(path, options) {
   return response.json();
 }
 
-function printTicket(sale) {
-  const lines = [
+function plainText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E\n]/g, '');
+}
+
+function ticketLines(sale) {
+  return [
     '      POS LOCAL',
     '   Ticket de venta',
     '------------------------------',
@@ -37,6 +47,39 @@ function printTicket(sale) {
     `TOTAL:    ${currency.format(sale.total)}`,
     '------------------------------',
     'Gracias por su compra'
+  ].map(plainText);
+}
+
+function escposTicketBytes(sale) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const push = (...bytes) => chunks.push(Uint8Array.from(bytes));
+  const text = (value = '') => chunks.push(encoder.encode(`${plainText(value)}\n`));
+
+  push(0x1b, 0x40);
+  push(0x1b, 0x61, 0x01);
+  push(0x1b, 0x45, 0x01);
+  text('POS LOCAL');
+  push(0x1b, 0x45, 0x00);
+  text('Ticket de venta');
+  push(0x1b, 0x61, 0x00);
+  ticketLines(sale).slice(2).forEach(text);
+  push(0x0a, 0x0a, 0x0a);
+  push(0x1d, 0x56, 0x00);
+
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const bytes = new Uint8Array(totalLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return bytes;
+}
+
+function printTicketFallback(sale) {
+  const lines = [
+    ...ticketLines(sale)
   ];
 
   const previousTicket = document.querySelector('.print-ticket');
@@ -53,7 +96,18 @@ function printTicket(sale) {
   setTimeout(cleanup, 1000);
 }
 
-function downloadPdf(title, documentData, fileName) {
+async function printTicket(sale, printSettings = defaultPrintSettings) {
+  if (isTauri() && printSettings.thermalPrinterShare) {
+    await invoke('print_escpos_windows', {
+      printerShare: printSettings.thermalPrinterShare,
+      bytes: Array.from(escposTicketBytes(sale))
+    });
+    return;
+  }
+  printTicketFallback(sale);
+}
+
+function buildPdf(title, documentData) {
   const doc = new jsPDF();
   doc.setFontSize(16);
   doc.text(title, 14, 18);
@@ -74,10 +128,20 @@ function downloadPdf(title, documentData, fileName) {
     }
   });
   if (documentData.total) doc.text(`Total: ${currency.format(documentData.total)}`, 14, y + 6);
+  return doc;
+}
+
+async function printOrSavePdf(title, documentData, fileName, printSettings = defaultPrintSettings) {
+  const doc = buildPdf(title, documentData);
+  if (isTauri() && printSettings.autoPrintPdf) {
+    const bytes = new Uint8Array(doc.output('arraybuffer'));
+    await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
+    return;
+  }
   doc.save(fileName);
 }
 
-function SaleSection({ refreshAdmin }) {
+function SaleSection({ refreshAdmin, printSettings }) {
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
@@ -104,10 +168,10 @@ function SaleSection({ refreshAdmin }) {
     try {
       const payload = { customerName, items: cart.map(({ productId, quantity }) => ({ productId, quantity })) };
       const data = await request(kind === 'sale' ? '/sales' : '/quotes', { method: 'POST', body: JSON.stringify(payload) });
-      if (kind === 'sale') printTicket(data);
-      if (kind === 'quote') downloadPdf('Cotizacion', data, `${data.folio}.pdf`);
+      if (kind === 'sale') await printTicket(data, printSettings);
+      if (kind === 'quote') await printOrSavePdf('Cotizacion', data, `${data.folio}.pdf`, printSettings);
       setCart([]);
-      setMessage(kind === 'sale' ? 'Venta registrada e impresa.' : 'Cotizacion generada en PDF.');
+      setMessage(kind === 'sale' ? 'Venta registrada e impresa.' : 'Cotizacion enviada a impresion o PDF.');
       refreshAdmin();
     } catch (error) {
       setMessage(error.message);
@@ -180,7 +244,7 @@ function InventorySection() {
   </section>;
 }
 
-function AdminSection({ refreshKey }) {
+function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
   const [dashboard, setDashboard] = useState(null);
   const [sales, setSales] = useState([]);
   const [quotes, setQuotes] = useState([]);
@@ -190,15 +254,21 @@ function AdminSection({ refreshKey }) {
   });
   useEffect(() => { load(); }, [refreshKey]);
 
-  const reprintSale = async (id) => printTicket(await request(`/sales/${id}`));
+  const reprintSale = async (id) => printTicket(await request(`/sales/${id}`), printSettings);
   const reprintQuote = async (id) => {
     const quote = await request(`/quotes/${id}`);
-    downloadPdf('Cotizacion', quote, `${quote.folio}.pdf`);
+    await printOrSavePdf('Cotizacion', quote, `${quote.folio}.pdf`, printSettings);
   };
-  const report = async (type) => downloadPdf(type === 'sales' ? 'Reporte de ventas' : 'Reporte de inventario', await request(`/reports/${type}`), `reporte-${type}.pdf`);
+  const report = async (type) => printOrSavePdf(type === 'sales' ? 'Reporte de ventas' : 'Reporte de inventario', await request(`/reports/${type}`), `reporte-${type}.pdf`, printSettings);
 
   return <section>
     <h2>Administracion</h2>
+    <div className="print-settings">
+      <h3>Impresion Windows</h3>
+      <p>Para tickets ESC/POS escribe el nombre compartido de la impresora termica, por ejemplo <code>POS58</code> o <code>\\CAJA\POS58</code>.</p>
+      <input value={printSettings.thermalPrinterShare} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterShare: event.target.value })} placeholder="Impresora termica compartida" />
+      <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Imprimir PDFs automaticamente con Windows cuando se use Tauri</label>
+    </div>
     {dashboard && <div className="stats">
       <article><strong>{dashboard.salesSummary.count}</strong><span>Ventas</span></article>
       <article><strong>{currency.format(dashboard.salesSummary.total)}</strong><span>Total vendido</span></article>
@@ -217,14 +287,22 @@ function AdminSection({ refreshKey }) {
 function App() {
   const [section, setSection] = useState('sale');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [printSettings, setPrintSettingsState] = useState(() => {
+    const saved = localStorage.getItem('pos-print-settings');
+    return saved ? { ...defaultPrintSettings, ...JSON.parse(saved) } : defaultPrintSettings;
+  });
+  const setPrintSettings = (settings) => {
+    setPrintSettingsState(settings);
+    localStorage.setItem('pos-print-settings', JSON.stringify(settings));
+  };
   return <main>
     <header>
       <div><h1>Punto de Venta Local</h1><p>Express + SQLite + React + Tauri</p></div>
       <nav>{[['sale', 'Venta'], ['inventory', 'Inventario'], ['admin', 'Administracion']].map(([key, label]) => <button className={section === key ? 'active' : ''} onClick={() => setSection(key)} key={key}>{label}</button>)}</nav>
     </header>
-    {section === 'sale' && <SaleSection refreshAdmin={() => setRefreshKey(refreshKey + 1)} />}
+    {section === 'sale' && <SaleSection refreshAdmin={() => setRefreshKey(refreshKey + 1)} printSettings={printSettings} />}
     {section === 'inventory' && <InventorySection />}
-    {section === 'admin' && <AdminSection refreshKey={refreshKey} />}
+    {section === 'admin' && <AdminSection refreshKey={refreshKey} printSettings={printSettings} setPrintSettings={setPrintSettings} />}
   </main>;
 }
 

@@ -31,6 +31,10 @@ input { border: 1px solid #ddd2c2; border-radius: 12px; box-sizing: border-box; 
 .stats strong { color: #d45b2f; font-size: 26px; }
 .history { align-items: center; display: flex; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding: 10px; }
 .print-ticket { display: none; }
+.print-settings { background: #fffaf1; border: 1px solid #e7dccb; border-radius: 18px; display: grid; gap: 10px; margin-bottom: 16px; padding: 16px; }
+.print-settings label { align-items: center; display: flex; gap: 8px; }
+.print-settings input[type="checkbox"] { width: auto; }
+code { background: #efe3d2; border-radius: 6px; padding: 2px 5px; }
 
 @media (max-width: 900px) {
   main { padding: 14px; }

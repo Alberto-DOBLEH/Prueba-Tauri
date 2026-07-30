@@ -95,3 +95,38 @@ npm run tauri:build:windows:msi
 La app Tauri instalada no levanta automaticamente el backend. Antes de usarla, el backend debe estar corriendo en `http://localhost:3001`.
 
 Para una version final de Windows conviene integrar el backend como sidecar o migrar la logica de backend a comandos Tauri/Rust para que todo quede dentro de un solo instalador.
+
+## Impresion automatica en Windows
+
+Esta branch incluye impresion nativa basica usando comandos Tauri.
+
+### Tickets termicos ESC/POS
+
+La app genera bytes ESC/POS y los envia con `copy /B` a una impresora compartida.
+
+Configura la impresora asi:
+
+1. Instala la impresora termica en Windows.
+2. Verifica que imprime desde Windows.
+3. Comparte la impresora con un nombre corto, por ejemplo `POS58`.
+4. Abre la app.
+5. Ve a `Administracion > Impresion Windows`.
+6. Escribe `POS58` o la ruta completa `\\NOMBRE-PC\POS58`.
+
+Notas:
+
+- Debe ser una impresora compatible con ESC/POS.
+- Si el driver no acepta datos raw, puede no imprimir correctamente.
+- El formato usa comandos ESC/POS basicos: inicializar, alineacion, negritas, avance de papel y corte.
+
+### Reportes y cotizaciones PDF
+
+Los PDFs se mandan a Windows con la accion del sistema `Print`.
+
+Requisitos:
+
+- Tener una app PDF instalada y asociada a `.pdf`.
+- Tener impresora predeterminada.
+- Mantener activa la opcion `Imprimir PDFs automaticamente con Windows` en administracion.
+
+Si Windows no puede imprimir el PDF automaticamente, desactiva esa opcion para que la app vuelva a descargar el archivo PDF.
