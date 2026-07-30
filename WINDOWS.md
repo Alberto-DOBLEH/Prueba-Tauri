@@ -148,7 +148,7 @@ La version de la app se controla en:
 - `Frontend\src-tauri\tauri.conf.json`
 - `Frontend\src-tauri\Cargo.toml`
 
-La version actual es `1.0.1`. Para generar un MSI de esa version:
+La version actual es `1.0.2`. Para generar un MSI de esa version:
 
 ```powershell
 cd Frontend
@@ -158,5 +158,5 @@ npm run tauri:build:windows:msi:clean
 Instala con doble clic o con:
 
 ```powershell
-msiexec /i "ruta\al\POS Local_1.0.1_x64_en-US.msi"
+msiexec /i "ruta\al\POS Local_1.0.2_x64_en-US.msi"
 ```

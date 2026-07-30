@@ -161,7 +161,7 @@ Para que Windows detecte una nueva version del instalador, actualiza estos archi
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 
-La version actual es `1.0.1`. Para probar instalacion sobre una version anterior, genera el MSI con:
+La version actual es `1.0.2`. Para probar instalacion sobre una version anterior, genera el MSI con:
 
 ```powershell
 npm run tauri:build:windows:msi
