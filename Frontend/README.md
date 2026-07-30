@@ -21,6 +21,8 @@ Interfaz en React con Vite y contenedor Tauri.
 - `npm run tauri:build:windows`: genera instalador `.exe` NSIS y `.msi` desde Windows.
 - `npm run tauri:build:windows:exe`: genera solo `.exe` NSIS desde Windows.
 - `npm run tauri:build:windows:msi`: genera solo `.msi` desde Windows.
+- `npm run tauri:build:windows:clean`: limpia builds anteriores y genera `.exe` + `.msi`.
+- `npm run tauri:build:windows:msi:clean`: limpia builds anteriores y genera solo `.msi`.
 
 ## Pantallas
 
@@ -164,3 +166,11 @@ La version actual es `1.0.1`. Para probar instalacion sobre una version anterior
 ```powershell
 npm run tauri:build:windows:msi
 ```
+
+Si despues de actualizar version sigues viendo un MSI viejo, limpia artefactos ignorados y recompila:
+
+```powershell
+npm run tauri:build:windows:msi:clean
+```
+
+Esto borra `Frontend\dist` y `Frontend\src-tauri\target`, que no se eliminan con `git pull` porque estan ignorados por Git.

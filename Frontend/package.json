@@ -13,7 +13,10 @@
     "tauri:build:linux": "tauri build --bundles rpm",
     "tauri:build:windows": "tauri build --bundles nsis,msi",
     "tauri:build:windows:exe": "tauri build --bundles nsis",
-    "tauri:build:windows:msi": "tauri build --bundles msi"
+    "tauri:build:windows:msi": "tauri build --bundles msi",
+    "clean:windows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force dist,src-tauri/target -ErrorAction SilentlyContinue\"",
+    "tauri:build:windows:clean": "npm run clean:windows && npm run tauri:build:windows",
+    "tauri:build:windows:msi:clean": "npm run clean:windows && npm run tauri:build:windows:msi"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",

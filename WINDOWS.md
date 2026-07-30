@@ -85,6 +85,14 @@ Solo MSI:
 npm run tauri:build:windows:msi
 ```
 
+Si vienes de una version anterior y la carpeta de salida sigue mostrando `1.0.0`, usa el build limpio:
+
+```powershell
+npm run tauri:build:windows:msi:clean
+```
+
+`git pull` no borra `Frontend\src-tauri\target` ni `Frontend\dist` porque son carpetas ignoradas. Por eso pueden quedar instaladores viejos junto a los nuevos.
+
 ## Ubicacion de instaladores
 
 - EXE NSIS: `Frontend\src-tauri\target\release\bundle\nsis\`
@@ -144,7 +152,7 @@ La version actual es `1.0.1`. Para generar un MSI de esa version:
 
 ```powershell
 cd Frontend
-npm run tauri:build:windows:msi
+npm run tauri:build:windows:msi:clean
 ```
 
 Instala con doble clic o con:
