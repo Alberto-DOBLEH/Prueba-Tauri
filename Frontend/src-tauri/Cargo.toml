@@ -1,6 +1,6 @@
 [package]
 name = "pos_local"
-version = "1.0.0"
+version = "1.0.1"
 description = "Punto de venta local con Tauri"
 authors = ["pruebas-tauri"]
 license = "MIT"

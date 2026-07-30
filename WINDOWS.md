@@ -121,7 +121,7 @@ Notas:
 
 ### Reportes y cotizaciones PDF
 
-Los PDFs se mandan a Windows con la accion del sistema `Print`.
+Los PDFs se guardan en `Descargas` y tambien se mandan a Windows con la accion del sistema `Print` cuando esta activada la opcion de impresion automatica.
 
 Requisitos:
 
@@ -129,4 +129,26 @@ Requisitos:
 - Tener impresora predeterminada.
 - Mantener activa la opcion `Imprimir PDFs automaticamente con Windows` en administracion.
 
-Si Windows no puede imprimir el PDF automaticamente, desactiva esa opcion para que la app vuelva a descargar el archivo PDF.
+Si Windows no puede imprimir el PDF automaticamente, desactiva esa opcion para que la app solo guarde el archivo PDF en `Descargas`.
+
+## Probar versionado del MSI
+
+La version de la app se controla en:
+
+- `Frontend\package.json`
+- `Frontend\package-lock.json`
+- `Frontend\src-tauri\tauri.conf.json`
+- `Frontend\src-tauri\Cargo.toml`
+
+La version actual es `1.0.1`. Para generar un MSI de esa version:
+
+```powershell
+cd Frontend
+npm run tauri:build:windows:msi
+```
+
+Instala con doble clic o con:
+
+```powershell
+msiexec /i "ruta\al\POS Local_1.0.1_x64_en-US.msi"
+```

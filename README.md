@@ -96,8 +96,8 @@ Importante: el instalador de Tauri empaqueta la app de escritorio, pero en este 
 ## Impresion y PDFs
 
 - Ventas: en Tauri/Windows se intenta enviar el ticket como bytes ESC/POS a una impresora termica compartida. En web/Linux queda un fallback con `window.print()` en formato de 58 mm.
-- Cotizaciones: se genera PDF con `jsPDF`; en Tauri/Windows se puede mandar directo a imprimir usando la accion `Print` registrada en Windows.
-- Reportes: ventas e inventario se generan como PDF y en Tauri/Windows se intentan imprimir automaticamente con el visor PDF predeterminado.
+- Cotizaciones: se genera PDF con `jsPDF`; en Tauri se guarda en Descargas y en Windows tambien se puede mandar directo a imprimir usando la accion `Print` registrada en Windows.
+- Reportes: ventas e inventario se generan como PDF, se guardan en Descargas y en Tauri/Windows se intentan imprimir automaticamente con el visor PDF predeterminado.
 - Historial: ventas y cotizaciones se pueden reimprimir desde administracion.
 
 La configuracion de impresora esta en la pantalla `Administracion`, seccion `Impresion Windows`.

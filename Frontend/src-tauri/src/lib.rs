@@ -24,14 +24,40 @@ fn temp_print_path(file_name: &str, fallback: &str) -> PathBuf {
     path
 }
 
+fn downloads_path(file_name: &str, fallback: &str) -> Result<PathBuf, String> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE")
+            .map(PathBuf::from)
+            .map(|path| path.join("Downloads"))
+    } else {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .map(|path| path.join("Downloads"))
+    }
+    .map_err(|_| "No se pudo encontrar la carpeta de descargas.".to_string())?;
+
+    fs::create_dir_all(&base).map_err(|error| error.to_string())?;
+    Ok(base.join(safe_file_name(file_name, fallback)))
+}
+
+fn save_pdf_to_downloads(file_name: &str, bytes: Vec<u8>) -> Result<PathBuf, String> {
+    let path = downloads_path(file_name, "documento.pdf")?;
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+#[tauri::command]
+fn save_pdf_downloads(file_name: String, bytes: Vec<u8>) -> Result<String, String> {
+    save_pdf_to_downloads(&file_name, bytes).map(|path| path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn print_pdf_windows(file_name: String, bytes: Vec<u8>) -> Result<String, String> {
     if !cfg!(target_os = "windows") {
         return Err("La impresion automatica de PDF solo esta implementada para Windows.".into());
     }
 
-    let path = temp_print_path(&file_name, "documento.pdf");
-    fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    let path = save_pdf_to_downloads(&file_name, bytes)?;
 
     let path_string = path.to_string_lossy().replace('\'', "''");
     let script = format!(
@@ -90,7 +116,7 @@ fn print_escpos_windows(printer_share: String, bytes: Vec<u8>) -> Result<String,
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![print_pdf_windows, print_escpos_windows])
+        .invoke_handler(tauri::generate_handler![save_pdf_downloads, print_pdf_windows, print_escpos_windows])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -133,9 +133,13 @@ function buildPdf(title, documentData) {
 
 async function printOrSavePdf(title, documentData, fileName, printSettings = defaultPrintSettings) {
   const doc = buildPdf(title, documentData);
+  const bytes = new Uint8Array(doc.output('arraybuffer'));
   if (isTauri() && printSettings.autoPrintPdf) {
-    const bytes = new Uint8Array(doc.output('arraybuffer'));
     await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
+    return;
+  }
+  if (isTauri()) {
+    await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
     return;
   }
   doc.save(fileName);
@@ -171,7 +175,7 @@ function SaleSection({ refreshAdmin, printSettings }) {
       if (kind === 'sale') await printTicket(data, printSettings);
       if (kind === 'quote') await printOrSavePdf('Cotizacion', data, `${data.folio}.pdf`, printSettings);
       setCart([]);
-      setMessage(kind === 'sale' ? 'Venta registrada e impresa.' : 'Cotizacion enviada a impresion o PDF.');
+      setMessage(kind === 'sale' ? 'Venta registrada e impresa.' : 'Cotizacion guardada en Descargas y enviada a impresion si aplica.');
       refreshAdmin();
     } catch (error) {
       setMessage(error.message);

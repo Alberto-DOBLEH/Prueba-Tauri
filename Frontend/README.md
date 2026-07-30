@@ -134,7 +134,7 @@ Si no se configura impresora compartida, la app usa el fallback visual de impres
 
 ### PDFs de cotizaciones y reportes
 
-Las cotizaciones y reportes se generan con `jsPDF`. En Tauri/Windows, si esta activa la opcion `Imprimir PDFs automaticamente con Windows`, la app manda los bytes PDF al comando `print_pdf_windows`.
+Las cotizaciones y reportes se generan con `jsPDF`. En Tauri se guardan en la carpeta `Descargas`. En Windows, si esta activa la opcion `Imprimir PDFs automaticamente con Windows`, la app tambien manda los bytes PDF al comando `print_pdf_windows`.
 
 Ese comando guarda un PDF temporal y ejecuta PowerShell con:
 
@@ -148,4 +148,19 @@ Requisitos:
 - Esa app debe soportar la accion `Print`.
 - Debe existir una impresora predeterminada configurada en Windows.
 
-Si falla la impresion automatica o se ejecuta en navegador/Linux, la app descarga el PDF como antes.
+Si falla la impresion automatica o se ejecuta en navegador/Linux, la app conserva el comportamiento de guardar o descargar el PDF.
+
+## Versionado de MSI
+
+Para que Windows detecte una nueva version del instalador, actualiza estos archivos antes de compilar:
+
+- `package.json`
+- `package-lock.json`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/Cargo.toml`
+
+La version actual es `1.0.1`. Para probar instalacion sobre una version anterior, genera el MSI con:
+
+```powershell
+npm run tauri:build:windows:msi
+```
