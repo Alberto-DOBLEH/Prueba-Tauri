@@ -142,20 +142,24 @@ async function printOrSavePdf(title, documentData, fileName, printSettings = def
   const bytes = new Uint8Array(doc.output('arraybuffer'));
   if (isTauri()) {
     await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
-    if (printSettings.pdfPrinterName) {
-      try {
-        await invoke('print_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName, bytes: Array.from(bytes) });
-        return;
-      } catch (error) {
-        console.warn('No se pudo imprimir PDF con rust-printers, usando fallback Windows.', error);
-      }
-    }
     if (printSettings.autoPrintPdf) {
-      await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
+      try {
+        await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
+      } catch (error) {
+        console.warn('No se pudo imprimir PDF con Windows Print. El PDF queda guardado en Descargas.', error);
+      }
     }
     return;
   }
   doc.save(fileName);
+}
+
+function testPdfBytes() {
+  const doc = buildPdf('Prueba de impresion PDF', {
+    folio: 'PRUEBA-PDF',
+    items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
+  });
+  return new Uint8Array(doc.output('arraybuffer'));
 }
 
 function SaleSection({ refreshAdmin, printSettings }) {
@@ -327,16 +331,33 @@ function PrintersSection({ printSettings, setPrintSettings }) {
 
   useEffect(() => { loadPrinters(); }, []);
 
-  const testPdf = async () => {
+  const testPdfSaved = async () => {
+    try {
+      const bytes = testPdfBytes();
+      const header = String.fromCharCode(...bytes.slice(0, 4));
+      const path = await invoke('save_pdf_downloads', { fileName: 'prueba-impresion.pdf', bytes: Array.from(bytes) });
+      setMessage(`PDF guardado: ${path}. Tamano: ${bytes.length} bytes. Encabezado: ${header}`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  const testPdfWindows = async () => {
+    try {
+      const bytes = Array.from(testPdfBytes());
+      const path = await invoke('print_pdf_windows', { fileName: 'prueba-impresion.pdf', bytes });
+      setMessage(`PDF enviado con Windows Print. Archivo base guardado en: ${path}`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  const testPdfSpooler = async () => {
     try {
       if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para PDF.');
-      const doc = buildPdf('Prueba de impresion PDF', {
-        folio: 'PRUEBA-PDF',
-        items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
-      });
-      const bytes = Array.from(new Uint8Array(doc.output('arraybuffer')));
+      const bytes = Array.from(testPdfBytes());
       const jobId = await invoke('print_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName: 'prueba-impresion.pdf', bytes });
-      setMessage(`PDF enviado. Job ${jobId}`);
+      setMessage(`PDF enviado directo al spooler. Job ${jobId}. Esta prueba no es compatible con Microsoft Print to PDF en muchos equipos.`);
     } catch (error) {
       setMessage(String(error));
     }
@@ -368,7 +389,9 @@ function PrintersSection({ printSettings, setPrintSettings }) {
         {printers.map((printer) => <option key={`thermal-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
       </select>
       <div className="actions">
-        <button onClick={testPdf}>Probar PDF</button>
+        <button onClick={testPdfSaved}>Guardar PDF prueba</button>
+        <button onClick={testPdfWindows}>Probar PDF Windows Print</button>
+        <button className="secondary" onClick={testPdfSpooler}>Probar PDF directo spooler</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
       </div>
       {message && <p className="message">{message}</p>}

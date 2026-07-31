@@ -59,7 +59,9 @@ Tambien incluye:
 Detecta impresoras del sistema usando el crate Rust `printers`, permite seleccionar una impresora para PDFs y una impresora termica ESC/POS, y ofrece botones de prueba.
 
 - `Detectar impresoras`: lista impresoras disponibles, predeterminadas, puertos y estado.
-- `Probar PDF`: genera un PDF de prueba con `jsPDF`, lo guarda en Descargas y lo envia a la impresora seleccionada con `printers`.
+- `Guardar PDF prueba`: genera un PDF con `jsPDF`, lo guarda en Descargas y muestra tamano/encabezado para validar que empiece con `%PDF`.
+- `Probar PDF Windows Print`: guarda el PDF y usa `Start-Process -Verb Print`; es el metodo recomendado para `Microsoft Print to PDF` y drivers graficos.
+- `Probar PDF directo spooler`: manda bytes PDF directo con `printers`; es una prueba avanzada y puede generar archivos vacios con `Microsoft Print to PDF`.
 - `Probar ESC/POS`: genera un ticket de prueba con `escpos-rs` y lo envia como RAW a la impresora seleccionada con `printers`.
 
 ## Tauri
@@ -169,7 +171,7 @@ Para que Windows detecte una nueva version del instalador, actualiza estos archi
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 
-La version actual es `1.0.3`. Para probar instalacion sobre una version anterior, genera el MSI con:
+La version actual es `1.0.4`. Para probar instalacion sobre una version anterior, genera el MSI con:
 
 ```powershell
 npm run tauri:build:windows:msi

@@ -115,6 +115,8 @@ La seccion `Impresoras` usa dos crates Rust:
 
 Desde esa pantalla puedes seleccionar la impresora de PDFs, seleccionar la impresora termica y ejecutar pruebas sin crear una venta real.
 
+Para PDFs usa primero `Guardar PDF prueba` y `Probar PDF Windows Print`. El boton `Probar PDF directo spooler` es diagnostico avanzado; `Microsoft Print to PDF` puede crear un archivo de 0 KB porque no acepta bytes PDF crudos por `WritePrinter`.
+
 ### Tickets termicos ESC/POS
 
 La app genera bytes ESC/POS y los envia con `copy /B` a una impresora compartida.
@@ -155,7 +157,7 @@ La version de la app se controla en:
 - `Frontend\src-tauri\tauri.conf.json`
 - `Frontend\src-tauri\Cargo.toml`
 
-La version actual es `1.0.3`. Para generar un MSI de esa version:
+La version actual es `1.0.4`. Para generar un MSI de esa version:
 
 ```powershell
 cd Frontend
@@ -165,5 +167,5 @@ npm run tauri:build:windows:msi:clean
 Instala con doble clic o con:
 
 ```powershell
-msiexec /i "ruta\al\POS Local_1.0.3_x64_en-US.msi"
+msiexec /i "ruta\al\POS Local_1.0.4_x64_en-US.msi"
 ```
