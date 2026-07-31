@@ -14,11 +14,11 @@ button { background: #18212f; border: 0; border-radius: 12px; color: white; curs
 button.secondary, nav button { background: #e0d5c5; color: #18212f; }
 button.active { background: #d45b2f; color: white; }
 button:disabled { cursor: not-allowed; opacity: .45; }
-input { border: 1px solid #ddd2c2; border-radius: 12px; box-sizing: border-box; font: inherit; padding: 12px; width: 100%; }
+input, select { border: 1px solid #ddd2c2; border-radius: 12px; box-sizing: border-box; font: inherit; padding: 12px; width: 100%; }
 .grid { display: grid; gap: 18px; }
 .two { grid-template-columns: minmax(0, 1fr) 360px; }
 .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: 16px; }
-.card, .panel, .stats article, .history, .row { background: #fffaf1; border: 1px solid #e7dccb; border-radius: 18px; box-shadow: 0 10px 24px rgb(24 33 47 / 8%); }
+.card, .panel, .stats article, .history, .row, .printer-row { background: #fffaf1; border: 1px solid #e7dccb; border-radius: 18px; box-shadow: 0 10px 24px rgb(24 33 47 / 8%); }
 .card { display: grid; gap: 8px; padding: 14px; }
 .panel { align-self: start; display: grid; gap: 12px; padding: 18px; position: sticky; top: 18px; }
 .line { align-items: center; display: grid; gap: 8px; grid-template-columns: 1fr 70px; }
@@ -34,6 +34,8 @@ input { border: 1px solid #ddd2c2; border-radius: 12px; box-sizing: border-box; 
 .print-settings { background: #fffaf1; border: 1px solid #e7dccb; border-radius: 18px; display: grid; gap: 10px; margin-bottom: 16px; padding: 16px; }
 .print-settings label { align-items: center; display: flex; gap: 8px; }
 .print-settings input[type="checkbox"] { width: auto; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.printer-row { display: grid; gap: 6px; padding: 14px; }
 code { background: #efe3d2; border-radius: 6px; padding: 2px 5px; }
 
 @media (max-width: 900px) {

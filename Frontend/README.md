@@ -54,6 +54,14 @@ Tambien incluye:
 - Historial de ventas con boton de reimprimir ticket.
 - Historial de cotizaciones con boton de reimprimir PDF.
 
+### Impresoras
+
+Detecta impresoras del sistema usando el crate Rust `printers`, permite seleccionar una impresora para PDFs y una impresora termica ESC/POS, y ofrece botones de prueba.
+
+- `Detectar impresoras`: lista impresoras disponibles, predeterminadas, puertos y estado.
+- `Probar PDF`: genera un PDF de prueba con `jsPDF`, lo guarda en Descargas y lo envia a la impresora seleccionada con `printers`.
+- `Probar ESC/POS`: genera un ticket de prueba con `escpos-rs` y lo envia como RAW a la impresora seleccionada con `printers`.
+
 ## Tauri
 
 La configuracion esta en `src-tauri/tauri.conf.json`.
@@ -161,7 +169,7 @@ Para que Windows detecte una nueva version del instalador, actualiza estos archi
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 
-La version actual es `1.0.2`. Para probar instalacion sobre una version anterior, genera el MSI con:
+La version actual es `1.0.3`. Para probar instalacion sobre una version anterior, genera el MSI con:
 
 ```powershell
 npm run tauri:build:windows:msi

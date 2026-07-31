@@ -1,6 +1,6 @@
 [package]
 name = "pos_local"
-version = "1.0.2"
+version = "1.0.3"
 description = "Punto de venta local con Tauri"
 authors = ["pruebas-tauri"]
 license = "MIT"
@@ -18,3 +18,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+escpos = "0.19.0"
+
+[target.'cfg(windows)'.dependencies]
+printers = "2.3.0"

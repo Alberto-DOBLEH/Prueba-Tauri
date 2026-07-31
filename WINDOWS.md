@@ -108,6 +108,13 @@ Para una version final de Windows conviene integrar el backend como sidecar o mi
 
 Esta branch incluye impresion nativa basica usando comandos Tauri.
 
+La seccion `Impresoras` usa dos crates Rust:
+
+- `printers`: detecta impresoras y envia trabajos al spooler de Windows.
+- `escpos-rs`: genera comandos ESC/POS para tickets termicos.
+
+Desde esa pantalla puedes seleccionar la impresora de PDFs, seleccionar la impresora termica y ejecutar pruebas sin crear una venta real.
+
 ### Tickets termicos ESC/POS
 
 La app genera bytes ESC/POS y los envia con `copy /B` a una impresora compartida.
@@ -148,7 +155,7 @@ La version de la app se controla en:
 - `Frontend\src-tauri\tauri.conf.json`
 - `Frontend\src-tauri\Cargo.toml`
 
-La version actual es `1.0.2`. Para generar un MSI de esa version:
+La version actual es `1.0.3`. Para generar un MSI de esa version:
 
 ```powershell
 cd Frontend
@@ -158,5 +165,5 @@ npm run tauri:build:windows:msi:clean
 Instala con doble clic o con:
 
 ```powershell
-msiexec /i "ruta\al\POS Local_1.0.2_x64_en-US.msi"
+msiexec /i "ruta\al\POS Local_1.0.3_x64_en-US.msi"
 ```

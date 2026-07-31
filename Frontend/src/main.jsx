@@ -7,7 +7,7 @@ import './styles.css';
 const API = 'http://localhost:3001/api';
 const currency = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' });
 const isTauri = () => Boolean(window.__TAURI_INTERNALS__);
-const defaultPrintSettings = { thermalPrinterShare: '', autoPrintPdf: true };
+const defaultPrintSettings = { pdfPrinterName: '', thermalPrinterName: '', thermalPrinterShare: '', autoPrintPdf: true };
 
 async function request(path, options) {
   const response = await fetch(`${API}${path}`, {
@@ -97,12 +97,18 @@ function printTicketFallback(sale) {
 }
 
 async function printTicket(sale, printSettings = defaultPrintSettings) {
-  if (isTauri() && printSettings.thermalPrinterShare) {
-    await invoke('print_escpos_windows', {
-      printerShare: printSettings.thermalPrinterShare,
-      bytes: Array.from(escposTicketBytes(sale))
-    });
-    return;
+  if (isTauri()) {
+    if (printSettings.thermalPrinterName) {
+      await invoke('print_sale_escpos', { printerName: printSettings.thermalPrinterName, sale });
+      return;
+    }
+    if (printSettings.thermalPrinterShare) {
+      await invoke('print_escpos_windows', {
+        printerShare: printSettings.thermalPrinterShare,
+        bytes: Array.from(escposTicketBytes(sale))
+      });
+      return;
+    }
   }
   printTicketFallback(sale);
 }
@@ -134,12 +140,19 @@ function buildPdf(title, documentData) {
 async function printOrSavePdf(title, documentData, fileName, printSettings = defaultPrintSettings) {
   const doc = buildPdf(title, documentData);
   const bytes = new Uint8Array(doc.output('arraybuffer'));
-  if (isTauri() && printSettings.autoPrintPdf) {
-    await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
-    return;
-  }
   if (isTauri()) {
     await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
+    if (printSettings.pdfPrinterName) {
+      try {
+        await invoke('print_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName, bytes: Array.from(bytes) });
+        return;
+      } catch (error) {
+        console.warn('No se pudo imprimir PDF con rust-printers, usando fallback Windows.', error);
+      }
+    }
+    if (printSettings.autoPrintPdf) {
+      await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
+    }
     return;
   }
   doc.save(fileName);
@@ -269,8 +282,8 @@ function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
     <h2>Administracion</h2>
     <div className="print-settings">
       <h3>Impresion Windows</h3>
-      <p>Para tickets ESC/POS escribe el nombre compartido de la impresora termica, por ejemplo <code>POS58</code> o <code>\\CAJA\POS58</code>.</p>
-      <input value={printSettings.thermalPrinterShare} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterShare: event.target.value })} placeholder="Impresora termica compartida" />
+      <p>La seleccion principal de impresoras esta en la seccion <code>Impresoras</code>. Este campo queda como respaldo para impresoras compartidas antiguas.</p>
+      <input value={printSettings.thermalPrinterShare} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterShare: event.target.value })} placeholder="Respaldo: impresora compartida tipo POS58" />
       <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Imprimir PDFs automaticamente con Windows cuando se use Tauri</label>
     </div>
     {dashboard && <div className="stats">
@@ -288,12 +301,99 @@ function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
   </section>;
 }
 
+function PrintersSection({ printSettings, setPrintSettings }) {
+  const [printers, setPrinters] = useState([]);
+  const [message, setMessage] = useState('');
+
+  const loadPrinters = async () => {
+    try {
+      if (!isTauri()) {
+        setMessage('La deteccion nativa solo funciona dentro de Tauri.');
+        return;
+      }
+      const detected = await invoke('list_system_printers');
+      const defaultPrinter = await invoke('get_default_system_printer');
+      setPrinters(detected);
+      setPrintSettings({
+        ...printSettings,
+        pdfPrinterName: printSettings.pdfPrinterName || defaultPrinter?.system_name || '',
+        thermalPrinterName: printSettings.thermalPrinterName || defaultPrinter?.system_name || ''
+      });
+      setMessage(`Impresoras detectadas: ${detected.length}`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  useEffect(() => { loadPrinters(); }, []);
+
+  const testPdf = async () => {
+    try {
+      if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para PDF.');
+      const doc = buildPdf('Prueba de impresion PDF', {
+        folio: 'PRUEBA-PDF',
+        items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
+      });
+      const bytes = Array.from(new Uint8Array(doc.output('arraybuffer')));
+      const jobId = await invoke('print_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName: 'prueba-impresion.pdf', bytes });
+      setMessage(`PDF enviado. Job ${jobId}`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  const testEscpos = async () => {
+    try {
+      if (!printSettings.thermalPrinterName) throw new Error('Selecciona una impresora termica ESC/POS.');
+      const jobId = await invoke('print_test_escpos', { printerName: printSettings.thermalPrinterName });
+      setMessage(`Ticket ESC/POS enviado. Job ${jobId}`);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  return <section>
+    <h2>Impresoras</h2>
+    <div className="print-settings">
+      <p>Esta seccion usa Tauri + Rust para detectar impresoras con <code>rust-printers</code> y generar tickets ESC/POS con <code>escpos-rs</code>.</p>
+      <button onClick={loadPrinters}>Detectar impresoras</button>
+      <label>Impresora para PDFs</label>
+      <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
+        <option value="">Usar fallback de Windows</option>
+        {printers.map((printer) => <option key={`pdf-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
+      </select>
+      <label>Impresora termica ESC/POS</label>
+      <select value={printSettings.thermalPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterName: event.target.value })}>
+        <option value="">Usar fallback visual/compartido</option>
+        {printers.map((printer) => <option key={`thermal-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
+      </select>
+      <div className="actions">
+        <button onClick={testPdf}>Probar PDF</button>
+        <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
+      </div>
+      {message && <p className="message">{message}</p>}
+    </div>
+    <div className="table">
+      {printers.map((printer) => <div className="printer-row" key={printer.system_name}>
+        <strong>{printer.name}</strong>
+        <span>Sistema: {printer.system_name}</span>
+        <span>Driver: {printer.driver_name || 'Sin driver'}</span>
+        <span>Puerto: {printer.port_name || 'Sin puerto'}</span>
+        <span>Estado: {printer.state}</span>
+        <span>{printer.is_default ? 'Predeterminada' : 'No predeterminada'} | {printer.is_shared ? 'Compartida' : 'No compartida'}</span>
+      </div>)}
+    </div>
+  </section>;
+}
+
 function App() {
   const [section, setSection] = useState('sale');
   const [refreshKey, setRefreshKey] = useState(0);
   const [printSettings, setPrintSettingsState] = useState(() => {
     const saved = localStorage.getItem('pos-print-settings');
-    return saved ? { ...defaultPrintSettings, ...JSON.parse(saved) } : defaultPrintSettings;
+    if (!saved) return defaultPrintSettings;
+    const parsed = JSON.parse(saved);
+    return { ...defaultPrintSettings, ...parsed, thermalPrinterName: parsed.thermalPrinterName || parsed.thermalPrinterShare || '' };
   });
   const setPrintSettings = (settings) => {
     setPrintSettingsState(settings);
@@ -302,11 +402,12 @@ function App() {
   return <main>
     <header>
       <div><h1>Punto de Venta Local</h1><p>Express + SQLite + React + Tauri</p></div>
-      <nav>{[['sale', 'Venta'], ['inventory', 'Inventario'], ['admin', 'Administracion']].map(([key, label]) => <button className={section === key ? 'active' : ''} onClick={() => setSection(key)} key={key}>{label}</button>)}</nav>
+      <nav>{[['sale', 'Venta'], ['inventory', 'Inventario'], ['admin', 'Administracion'], ['printers', 'Impresoras']].map(([key, label]) => <button className={section === key ? 'active' : ''} onClick={() => setSection(key)} key={key}>{label}</button>)}</nav>
     </header>
     {section === 'sale' && <SaleSection refreshAdmin={() => setRefreshKey(refreshKey + 1)} printSettings={printSettings} />}
     {section === 'inventory' && <InventorySection />}
     {section === 'admin' && <AdminSection refreshKey={refreshKey} printSettings={printSettings} setPrintSettings={setPrintSettings} />}
+    {section === 'printers' && <PrintersSection printSettings={printSettings} setPrintSettings={setPrintSettings} />}
   </main>;
 }
 
