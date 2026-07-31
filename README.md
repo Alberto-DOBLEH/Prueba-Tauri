@@ -99,6 +99,6 @@ Importante: el instalador de Tauri empaqueta la app de escritorio, pero en este 
 - Cotizaciones: se genera PDF con `jsPDF`; en Tauri se guarda en Descargas y en Windows tambien se puede mandar directo a imprimir usando la accion `Print` registrada en Windows.
 - Reportes: ventas e inventario se generan como PDF, se guardan en Descargas y en Tauri/Windows se intentan imprimir automaticamente con el visor PDF predeterminado.
 - Historial: ventas y cotizaciones se pueden reimprimir desde administracion.
-- Impresoras: pantalla para detectar impresoras del sistema, asignar impresora PDF, asignar impresora termica ESC/POS y lanzar pruebas separadas para PDF guardado, PDF por Windows Print, PDF directo al spooler y ESC/POS.
+- Impresoras: modulo aislado para probar impresion PDF y ESC/POS desde Tauri, guardar evidencias y registrar logs por intento.
 
 La configuracion de impresora esta en la pantalla `Administracion`, seccion `Impresion Windows`.

@@ -308,6 +308,7 @@ function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
 function PrintersSection({ printSettings, setPrintSettings }) {
   const [printers, setPrinters] = useState([]);
   const [message, setMessage] = useState('');
+  const [logs, setLogs] = useState([]);
 
   const loadPrinters = async () => {
     try {
@@ -331,33 +332,27 @@ function PrintersSection({ printSettings, setPrintSettings }) {
 
   useEffect(() => { loadPrinters(); }, []);
 
-  const testPdfSaved = async () => {
+  const loadLogs = async () => {
     try {
-      const bytes = testPdfBytes();
-      const header = String.fromCharCode(...bytes.slice(0, 4));
-      const path = await invoke('save_pdf_downloads', { fileName: 'prueba-impresion.pdf', bytes: Array.from(bytes) });
-      setMessage(`PDF guardado: ${path}. Tamano: ${bytes.length} bytes. Encabezado: ${header}`);
+      if (!isTauri()) return;
+      const entries = await invoke('get_printer_test_logs');
+      setLogs(entries.reverse().slice(0, 20));
     } catch (error) {
       setMessage(String(error));
     }
   };
 
-  const testPdfWindows = async () => {
-    try {
-      const bytes = Array.from(testPdfBytes());
-      const path = await invoke('print_pdf_windows', { fileName: 'prueba-impresion.pdf', bytes });
-      setMessage(`PDF enviado con Windows Print. Archivo base guardado en: ${path}`);
-    } catch (error) {
-      setMessage(String(error));
-    }
+  const showResult = (result) => {
+    setMessage(`${result.success ? 'OK' : 'ERROR'} | ${result.message}${result.error ? ` | ${result.error}` : ''}`);
+    loadLogs();
   };
 
-  const testPdfSpooler = async () => {
+  const testPdfPrinter = async () => {
     try {
       if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para PDF.');
       const bytes = Array.from(testPdfBytes());
-      const jobId = await invoke('print_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName: 'prueba-impresion.pdf', bytes });
-      setMessage(`PDF enviado directo al spooler. Job ${jobId}. Esta prueba no es compatible con Microsoft Print to PDF en muchos equipos.`);
+      const result = await invoke('print_test_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName: '', bytes });
+      showResult(result);
     } catch (error) {
       setMessage(String(error));
     }
@@ -366,8 +361,17 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   const testEscpos = async () => {
     try {
       if (!printSettings.thermalPrinterName) throw new Error('Selecciona una impresora termica ESC/POS.');
-      const jobId = await invoke('print_test_escpos', { printerName: printSettings.thermalPrinterName });
-      setMessage(`Ticket ESC/POS enviado. Job ${jobId}`);
+      const result = await invoke('print_test_escpos', { printerName: printSettings.thermalPrinterName });
+      showResult(result);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
+
+  const openTestFolder = async () => {
+    try {
+      const path = await invoke('open_printer_test_folder');
+      setMessage(`Carpeta de pruebas: ${path}`);
     } catch (error) {
       setMessage(String(error));
     }
@@ -376,25 +380,38 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Esta seccion usa Tauri + Rust para detectar impresoras con <code>rust-printers</code> y generar tickets ESC/POS con <code>escpos-rs</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>jsPDF -&gt; bytes -&gt; rust-printers</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
       <label>Impresora para PDFs</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
-        <option value="">Usar fallback de Windows</option>
+        <option value="">Selecciona impresora PDF</option>
         {printers.map((printer) => <option key={`pdf-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
       </select>
       <label>Impresora termica ESC/POS</label>
       <select value={printSettings.thermalPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterName: event.target.value })}>
-        <option value="">Usar fallback visual/compartido</option>
+        <option value="">Selecciona impresora ESC/POS</option>
         {printers.map((printer) => <option key={`thermal-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
       </select>
       <div className="actions">
-        <button onClick={testPdfSaved}>Guardar PDF prueba</button>
-        <button onClick={testPdfWindows}>Probar PDF Windows Print</button>
-        <button className="secondary" onClick={testPdfSpooler}>Probar PDF directo spooler</button>
+        <button onClick={testPdfPrinter}>Imprimir prueba PDF</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
+        <button className="secondary" onClick={openTestFolder}>Abrir carpeta pruebas</button>
+        <button className="secondary" onClick={loadLogs}>Ver logs</button>
       </div>
       {message && <p className="message">{message}</p>}
+    </div>
+    <div className="print-settings">
+      <h3>Logs de pruebas</h3>
+      <p>Se guardan en <code>Descargas/pos-printer-tests/printer-tests.log.jsonl</code> junto con los PDFs y archivos <code>.escpos</code> generados.</p>
+      <div className="table">
+        {logs.map((log, index) => <div className="printer-row" key={`${log.created_at}-${index}`}>
+          <strong>{log.success ? 'OK' : 'ERROR'} | {log.test_type} | {log.printer_name || 'Sin impresora'}</strong>
+          <span>Fecha: {log.created_at} | Metodo: {log.method}</span>
+          <span>Archivo: {log.file_path || 'No generado'} | Tamano: {log.file_size} bytes {log.header ? `| Header: ${log.header}` : ''}</span>
+          <span>Job: {log.job_id || 'N/A'} | {log.message}</span>
+          {log.error && <span>Error: {log.error}</span>}
+        </div>)}
+      </div>
     </div>
     <div className="table">
       {printers.map((printer) => <div className="printer-row" key={printer.system_name}>

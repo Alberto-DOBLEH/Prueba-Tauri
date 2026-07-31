@@ -108,14 +108,18 @@ Para una version final de Windows conviene integrar el backend como sidecar o mi
 
 Esta branch incluye impresion nativa basica usando comandos Tauri.
 
-La seccion `Impresoras` usa dos crates Rust:
+La seccion `Impresoras` usa dos crates Rust y esta pensada como banco de pruebas aislado:
 
 - `printers`: detecta impresoras y envia trabajos al spooler de Windows.
 - `escpos-rs`: genera comandos ESC/POS para tickets termicos.
 
 Desde esa pantalla puedes seleccionar la impresora de PDFs, seleccionar la impresora termica y ejecutar pruebas sin crear una venta real.
 
-Para PDFs usa primero `Guardar PDF prueba` y `Probar PDF Windows Print`. El boton `Probar PDF directo spooler` es diagnostico avanzado; `Microsoft Print to PDF` puede crear un archivo de 0 KB porque no acepta bytes PDF crudos por `WritePrinter`.
+Flujo PDF: `jsPDF` genera el PDF en React, React lo convierte a bytes, Tauri guarda el archivo en `Descargas\pos-printer-tests` y `printers` lo manda al spooler usando la impresora seleccionada.
+
+Flujo ESC/POS: Rust genera comandos con `escpos-rs`, guarda un archivo `.escpos` en `Descargas\pos-printer-tests` y `printers` manda esos bytes como RAW al spooler.
+
+Cada intento escribe una linea JSON en `Descargas\pos-printer-tests\printer-tests.log.jsonl` con resultado, error y ruta del archivo generado.
 
 ### Tickets termicos ESC/POS
 
@@ -157,7 +161,7 @@ La version de la app se controla en:
 - `Frontend\src-tauri\tauri.conf.json`
 - `Frontend\src-tauri\Cargo.toml`
 
-La version actual es `1.0.4`. Para generar un MSI de esa version:
+La version actual es `1.0.5`. Para generar un MSI de esa version:
 
 ```powershell
 cd Frontend
@@ -167,5 +171,5 @@ npm run tauri:build:windows:msi:clean
 Instala con doble clic o con:
 
 ```powershell
-msiexec /i "ruta\al\POS Local_1.0.4_x64_en-US.msi"
+msiexec /i "ruta\al\POS Local_1.0.5_x64_en-US.msi"
 ```

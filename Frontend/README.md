@@ -56,13 +56,15 @@ Tambien incluye:
 
 ### Impresoras
 
-Detecta impresoras del sistema usando el crate Rust `printers`, permite seleccionar una impresora para PDFs y una impresora termica ESC/POS, y ofrece botones de prueba.
+Modulo aislado para probar impresoras desde Tauri sin depender del backend.
 
 - `Detectar impresoras`: lista impresoras disponibles, predeterminadas, puertos y estado.
-- `Guardar PDF prueba`: genera un PDF con `jsPDF`, lo guarda en Descargas y muestra tamano/encabezado para validar que empiece con `%PDF`.
-- `Probar PDF Windows Print`: guarda el PDF y usa `Start-Process -Verb Print`; es el metodo recomendado para `Microsoft Print to PDF` y drivers graficos.
-- `Probar PDF directo spooler`: manda bytes PDF directo con `printers`; es una prueba avanzada y puede generar archivos vacios con `Microsoft Print to PDF`.
-- `Probar ESC/POS`: genera un ticket de prueba con `escpos-rs` y lo envia como RAW a la impresora seleccionada con `printers`.
+- `Imprimir prueba PDF`: genera un PDF con `jsPDF`, lo manda como bytes a Tauri, guarda el archivo en `Descargas/pos-printer-tests` y lo envia a la impresora seleccionada con `printers`.
+- `Probar ESC/POS`: genera un ticket de prueba con `escpos-rs`, guarda un archivo `.escpos` y lo envia como RAW a la impresora seleccionada con `printers`.
+- `Abrir carpeta pruebas`: abre la carpeta donde quedan PDFs, archivos `.escpos` y logs.
+- `Ver logs`: carga los ultimos intentos desde `printer-tests.log.jsonl`.
+
+Los logs guardan fecha, tipo de prueba, metodo usado, impresora, archivo generado, tamano, encabezado PDF si aplica, job id, resultado y error.
 
 ## Tauri
 
@@ -171,7 +173,7 @@ Para que Windows detecte una nueva version del instalador, actualiza estos archi
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 
-La version actual es `1.0.4`. Para probar instalacion sobre una version anterior, genera el MSI con:
+La version actual es `1.0.5`. Para probar instalacion sobre una version anterior, genera el MSI con:
 
 ```powershell
 npm run tauri:build:windows:msi

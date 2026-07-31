@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, io::Write, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
 
 use escpos::{
     driver::FileDriver,
@@ -43,6 +43,21 @@ struct SalePayload {
     items: Vec<SaleItemPayload>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct PrinterTestResult {
+    created_at: String,
+    test_type: String,
+    method: String,
+    printer_name: String,
+    file_path: String,
+    file_size: u64,
+    header: Option<String>,
+    success: bool,
+    job_id: Option<u64>,
+    message: String,
+    error: Option<String>,
+}
+
 fn safe_file_name(file_name: &str, fallback: &str) -> String {
     let cleaned: String = file_name
         .chars()
@@ -83,8 +98,60 @@ fn downloads_path(file_name: &str, fallback: &str) -> Result<PathBuf, String> {
     Ok(base.join(safe_file_name(file_name, fallback)))
 }
 
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn printer_tests_dir() -> Result<PathBuf, String> {
+    let mut path = downloads_path("pos-printer-tests", "pos-printer-tests")?;
+    path.pop();
+    path.push("pos-printer-tests");
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn printer_test_path(prefix: &str, extension: &str) -> Result<PathBuf, String> {
+    let mut path = printer_tests_dir()?;
+    path.push(format!("{}-{}.{}", prefix, unix_timestamp(), extension));
+    Ok(path)
+}
+
+fn append_printer_test_log(result: &PrinterTestResult) -> Result<(), String> {
+    let mut path = printer_tests_dir()?;
+    path.push("printer-tests.log.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let line = serde_json::to_string(result).map_err(|error| error.to_string())?;
+    writeln!(file, "{line}").map_err(|error| error.to_string())
+}
+
+fn file_header(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes[..bytes.len().min(4)]).to_string())
+}
+
 fn save_pdf_to_downloads(file_name: &str, bytes: Vec<u8>) -> Result<PathBuf, String> {
     let path = downloads_path(file_name, "documento.pdf")?;
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn save_test_pdf(file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = if file_name.trim().is_empty() {
+        printer_test_path("test-pdf", "pdf")?
+    } else {
+        let mut path = printer_tests_dir()?;
+        path.push(safe_file_name(file_name, "test-pdf.pdf"));
+        path
+    };
     fs::write(&path, bytes).map_err(|error| error.to_string())?;
     Ok(path)
 }
@@ -119,7 +186,7 @@ fn money(value: f64) -> String {
 }
 
 fn build_test_escpos_file() -> Result<PathBuf, String> {
-    let path = temp_print_path("ticket-prueba.escpos", "ticket-prueba.escpos");
+    let path = printer_test_path("test-ticket", "escpos")?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     let driver = FileDriver::open_with_options(&path, &options).map_err(|error| error.to_string())?;
@@ -347,9 +414,165 @@ fn print_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>)
 }
 
 #[tauri::command]
-fn print_test_escpos(printer_name: String) -> Result<u64, String> {
-    let path = build_test_escpos_file()?;
-    print_raw_file(&printer_name, &path, "POS Local ESC/POS Test")
+fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>) -> PrinterTestResult {
+    let created_at = unix_timestamp().to_string();
+    let method = "jsPDF -> Tauri bytes -> rust-printers -> WinSpool".to_string();
+    let header = file_header(&bytes);
+    let saved_path = save_test_pdf(&file_name, &bytes);
+
+    let mut result = match saved_path {
+        Ok(path) => {
+            let file_size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or_default();
+            #[cfg(target_os = "windows")]
+            let print_result = find_printer(&printer_name).and_then(|printer| {
+                printer
+                    .print_file(
+                        &path.to_string_lossy(),
+                        PrinterJobOptions {
+                            name: Some("POS Local PDF Test"),
+                            raw_properties: &[("document-format", "application/pdf")],
+                            converter: printers::common::converters::Converter::None,
+                        },
+                    )
+                    .map_err(|error| format!("{error:?}"))
+            });
+
+            #[cfg(not(target_os = "windows"))]
+            let print_result: Result<u64, String> = Err("rust-printers para PDF esta habilitado solo en Windows en este build.".into());
+
+            match print_result {
+                Ok(job_id) => PrinterTestResult {
+                    created_at: created_at.clone(),
+                    test_type: "pdf".into(),
+                    method: method.clone(),
+                    printer_name: printer_name.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                    file_size,
+                    header: header.clone(),
+                    success: true,
+                    job_id: Some(job_id),
+                    message: "Trabajo PDF enviado al spooler. Valida fisicamente si la impresora lo proceso.".into(),
+                    error: None,
+                },
+                Err(error) => PrinterTestResult {
+                    created_at: created_at.clone(),
+                    test_type: "pdf".into(),
+                    method: method.clone(),
+                    printer_name: printer_name.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                    file_size,
+                    header: header.clone(),
+                    success: false,
+                    job_id: None,
+                    message: "No se pudo enviar el PDF directo al spooler.".into(),
+                    error: Some(error),
+                },
+            }
+        }
+        Err(error) => PrinterTestResult {
+            created_at,
+            test_type: "pdf".into(),
+            method,
+            printer_name,
+            file_path: String::new(),
+            file_size: bytes.len() as u64,
+            header,
+            success: false,
+            job_id: None,
+            message: "No se pudo guardar el PDF de prueba.".into(),
+            error: Some(error),
+        },
+    };
+
+    if let Err(error) = append_printer_test_log(&result) {
+        result.message = format!("{} Ademas fallo guardar log: {error}", result.message);
+    }
+    result
+}
+
+#[tauri::command]
+fn print_test_escpos(printer_name: String) -> PrinterTestResult {
+    let created_at = unix_timestamp().to_string();
+    let method = "escpos-rs -> archivo .escpos -> rust-printers RAW -> WinSpool".to_string();
+    let mut result = match build_test_escpos_file() {
+        Ok(path) => {
+            let file_size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or_default();
+            match print_raw_file(&printer_name, &path, "POS Local ESC/POS Test") {
+                Ok(job_id) => PrinterTestResult {
+                    created_at: created_at.clone(),
+                    test_type: "escpos".into(),
+                    method: method.clone(),
+                    printer_name: printer_name.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                    file_size,
+                    header: None,
+                    success: true,
+                    job_id: Some(job_id),
+                    message: "Trabajo ESC/POS enviado como RAW. Valida fisicamente si salio el ticket.".into(),
+                    error: None,
+                },
+                Err(error) => PrinterTestResult {
+                    created_at: created_at.clone(),
+                    test_type: "escpos".into(),
+                    method: method.clone(),
+                    printer_name: printer_name.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                    file_size,
+                    header: None,
+                    success: false,
+                    job_id: None,
+                    message: "No se pudo enviar el ticket ESC/POS al spooler.".into(),
+                    error: Some(error),
+                },
+            }
+        }
+        Err(error) => PrinterTestResult {
+            created_at,
+            test_type: "escpos".into(),
+            method,
+            printer_name,
+            file_path: String::new(),
+            file_size: 0,
+            header: None,
+            success: false,
+            job_id: None,
+            message: "No se pudo generar el archivo ESC/POS de prueba.".into(),
+            error: Some(error),
+        },
+    };
+
+    if let Err(error) = append_printer_test_log(&result) {
+        result.message = format!("{} Ademas fallo guardar log: {error}", result.message);
+    }
+    result
+}
+
+#[tauri::command]
+fn get_printer_test_logs() -> Result<Vec<PrinterTestResult>, String> {
+    let mut path = printer_tests_dir()?;
+    path.push("printer-tests.log.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    Ok(content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<PrinterTestResult>(line).ok())
+        .collect())
+}
+
+#[tauri::command]
+fn open_printer_test_folder() -> Result<String, String> {
+    let path = printer_tests_dir()?;
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer").arg(&path).status();
+    #[cfg(target_os = "linux")]
+    let status = Command::new("xdg-open").arg(&path).status();
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(&path).status();
+
+    status.map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -404,8 +627,11 @@ pub fn run() {
             save_pdf_downloads,
             print_pdf_windows,
             print_pdf_to_printer,
+            print_test_pdf_to_printer,
             print_escpos_windows,
             print_test_escpos,
+            get_printer_test_logs,
+            open_printer_test_folder,
             print_sale_escpos
         ])
         .run(tauri::generate_context!())
