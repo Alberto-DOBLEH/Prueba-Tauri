@@ -137,18 +137,92 @@ function buildPdf(title, documentData) {
   return doc;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function documentRows(documentData) {
+  return documentData.items || documentData.sales || documentData.products || [];
+}
+
+function printableDocumentHtml(title, documentData) {
+  const rows = documentRows(documentData);
+  const generatedAt = new Date().toLocaleString();
+  const total = documentData.total ? `<p class="total">Total: ${escapeHtml(currency.format(documentData.total))}</p>` : '';
+  const rowHtml = rows.map((row) => {
+    const description = row.name
+      ? `${row.sku || ''} ${row.name}`.trim()
+      : `${row.folio || ''} ${row.customer_name || 'Mostrador'}`.trim();
+    const quantity = row.quantity || row.stock || '';
+    const amount = currency.format(row.total || row.price || 0);
+    return `<tr><td>${escapeHtml(description)}</td><td>${escapeHtml(quantity)}</td><td>${escapeHtml(amount)}</td></tr>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    @page { size: letter; margin: 14mm; }
+    body { color: #111827; font-family: Arial, sans-serif; font-size: 12px; margin: 0; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .meta { color: #4b5563; margin-bottom: 18px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #d1d5db; padding: 7px 5px; text-align: left; vertical-align: top; }
+    th:nth-child(2), td:nth-child(2) { text-align: center; width: 70px; }
+    th:nth-child(3), td:nth-child(3) { text-align: right; width: 110px; }
+    .total { font-size: 15px; font-weight: 700; margin-top: 18px; text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="meta">
+    <div>Folio: ${escapeHtml(documentData.folio || 'Reporte')}</div>
+    <div>Generado: ${escapeHtml(generatedAt)}</div>
+  </div>
+  <table>
+    <thead><tr><th>Descripcion</th><th>Cantidad</th><th>Importe</th></tr></thead>
+    <tbody>${rowHtml}</tbody>
+  </table>
+  ${total}
+</body>
+</html>`;
+}
+
+function printPrintableDocument(title, documentData) {
+  const previousFrame = document.querySelector('.pdf-print-frame');
+  previousFrame?.remove();
+
+  const frame = document.createElement('iframe');
+  frame.className = 'pdf-print-frame';
+  frame.style.position = 'fixed';
+  frame.style.right = '0';
+  frame.style.bottom = '0';
+  frame.style.width = '0';
+  frame.style.height = '0';
+  frame.style.border = '0';
+  frame.srcdoc = printableDocumentHtml(title, documentData);
+  document.body.appendChild(frame);
+
+  frame.onload = () => {
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    setTimeout(() => frame.remove(), 1000);
+  };
+}
+
 async function printOrSavePdf(title, documentData, fileName, printSettings = defaultPrintSettings) {
   const doc = buildPdf(title, documentData);
   const bytes = new Uint8Array(doc.output('arraybuffer'));
   if (isTauri()) {
     await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
-    if (printSettings.autoPrintPdf) {
-      try {
-        await invoke('print_pdf_windows', { fileName, bytes: Array.from(bytes) });
-      } catch (error) {
-        console.warn('No se pudo imprimir PDF con Windows Print. El PDF queda guardado en Descargas.', error);
-      }
-    }
+    if (printSettings.autoPrintPdf) printPrintableDocument(title, documentData);
     return;
   }
   doc.save(fileName);
@@ -288,7 +362,7 @@ function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
       <h3>Impresion Windows</h3>
       <p>La seleccion principal de impresoras esta en la seccion <code>Impresoras</code>. Este campo queda como respaldo para impresoras compartidas antiguas.</p>
       <input value={printSettings.thermalPrinterShare} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterShare: event.target.value })} placeholder="Respaldo: impresora compartida tipo POS58" />
-      <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Imprimir PDFs automaticamente con Windows cuando se use Tauri</label>
+      <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Abrir dialogo de impresion para cotizaciones y reportes cuando se use Tauri</label>
     </div>
     {dashboard && <div className="stats">
       <article><strong>{dashboard.salesSummary.count}</strong><span>Ventas</span></article>
@@ -349,10 +423,13 @@ function PrintersSection({ printSettings, setPrintSettings }) {
 
   const testPdfPrinter = async () => {
     try {
-      if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para PDF.');
       const bytes = Array.from(testPdfBytes());
-      const result = await invoke('print_test_pdf_to_printer', { printerName: printSettings.pdfPrinterName, fileName: '', bytes });
-      showResult(result);
+      await invoke('save_pdf_downloads', { fileName: 'prueba-pdf.pdf', bytes });
+      printPrintableDocument('Prueba de impresion PDF', {
+        folio: 'PRUEBA-PDF',
+        items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
+      });
+      setMessage('PDF guardado en Descargas. La impresion se abrio desde WebView2, sin depender de una app externa de PDF.');
     } catch (error) {
       setMessage(String(error));
     }
@@ -380,9 +457,9 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>jsPDF -&gt; PDF guardado -&gt; spooler o Windows PrintTo</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; HTML imprimible -&gt; WebView2 print</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
-      <label>Impresora para PDFs</label>
+      <label>Impresora para PDFs directos (diagnostico anterior)</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
         <option value="">Selecciona impresora PDF</option>
         {printers.map((printer) => <option key={`pdf-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
@@ -393,7 +470,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
         {printers.map((printer) => <option key={`thermal-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
       </select>
       <div className="actions">
-        <button onClick={testPdfPrinter}>Imprimir prueba PDF</button>
+        <button onClick={testPdfPrinter}>Probar impresion documento</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
         <button className="secondary" onClick={openTestFolder}>Abrir carpeta pruebas</button>
         <button className="secondary" onClick={loadLogs}>Ver logs</button>
