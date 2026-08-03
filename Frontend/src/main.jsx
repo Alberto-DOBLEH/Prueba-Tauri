@@ -8,6 +8,23 @@ const API = 'http://localhost:3001/api';
 const currency = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' });
 const isTauri = () => Boolean(window.__TAURI_INTERNALS__);
 const defaultPrintSettings = { pdfPrinterName: '', thermalPrinterName: '', thermalPrinterShare: '', autoPrintPdf: true };
+const printerLogsChangedEvent = 'pos-printer-logs-changed';
+
+function notifyPrinterLogsChanged() {
+  window.dispatchEvent(new Event(printerLogsChangedEvent));
+}
+
+async function logPrinterEvent(payload) {
+  if (!isTauri()) return null;
+  try {
+    const result = await invoke('add_printer_test_log', { payload });
+    notifyPrinterLogsChanged();
+    return result;
+  } catch (error) {
+    console.warn('No se pudo guardar el log de impresion.', error, payload);
+    return null;
+  }
+}
 
 async function request(path, options) {
   const response = await fetch(`${API}${path}`, {
@@ -29,25 +46,58 @@ function plainText(value) {
 }
 
 function ticketLines(sale) {
+  const { date, time } = ticketDateTime(sale.created_at);
   return [
-    '      POS LOCAL',
-    '   Ticket de venta',
-    '------------------------------',
-    `Folio: ${sale.folio}`,
-    `Fecha: ${new Date(sale.created_at).toLocaleString()}`,
-    `Cliente: ${sale.customer_name || 'Mostrador'}`,
-    '------------------------------',
+    'FERRETERIA MALOVA, S.A. DE C.V.',
+    'SUC NOVIEMBRE',
+    'DONDE USTED COMPRA DE CORAZON',
+    'BLVD CENTENARIO 2104',
+    'LOS ANGELES',
+    'R.F.C. FMA850606P44',
+    'TEL: (668)2392358',
+    `FECHA: ${date}  T:${fitText(sale.folio, 9)}`,
+    `HORA: ${time}  VEND: 08`,
+    '',
+    'COD  CANT  ART  PRECIO  IMPORTE',
+    '---------------------------------',
     ...sale.items.flatMap((item) => [
-      item.name.slice(0, 28),
-      `${item.quantity} x ${currency.format(item.unit_price)} = ${currency.format(item.total)}`
+      `${padRight(item.sku, 5)} ${padLeft(Number(item.quantity).toFixed(2), 5)} ${padRight('PZA', 5)} ${padLeft(ticketMoney(item.unit_price), 5)} ${padLeft(ticketMoney(item.total), 7)}`,
+      `${fitText(item.name, 32)} `
     ]),
-    '------------------------------',
-    `Subtotal: ${currency.format(sale.subtotal)}`,
-    `IVA:      ${currency.format(sale.tax)}`,
-    `TOTAL:    ${currency.format(sale.total)}`,
-    '------------------------------',
-    'Gracias por su compra'
+    '---------------------------------',
+    `T O T A L : ${ticketMoney(sale.total)}`,
+    '',
+    `*** IDWEB PARA FACTURAR ${fitText(sale.folio, 12)} ***`,
+    'FACTURA EN',
+    'WWW.FERRETERIAMALOVA.COM.MX/FACTURACION',
+    '***GRACIAS POR SU PREFERENCIA***',
+    'TODA DEVOLUCION CAUSARA 20% DE',
+    'CARGO Y NO SE ACEPTA DESPUES',
+    'DE 8 DIAS',
+    '---------------------------------'
   ].map(plainText);
+}
+
+function ticketMoney(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+function fitText(value, width) {
+  return plainText(value).slice(0, width);
+}
+
+function padRight(value, width) {
+  return fitText(value, width).padEnd(width, ' ');
+}
+
+function padLeft(value, width) {
+  return fitText(value, width).padStart(width, ' ');
+}
+
+function ticketDateTime(createdAt) {
+  const normalized = String(createdAt || '').replace('T', ' ');
+  const [date = normalized || new Date().toISOString().slice(0, 10), time = '00:00:00'] = normalized.split(/\s+/);
+  return { date, time: time.slice(0, 8) };
 }
 
 function escposTicketBytes(sale) {
@@ -55,17 +105,43 @@ function escposTicketBytes(sale) {
   const chunks = [];
   const push = (...bytes) => chunks.push(Uint8Array.from(bytes));
   const text = (value = '') => chunks.push(encoder.encode(`${plainText(value)}\n`));
+  const { date, time } = ticketDateTime(sale.created_at);
 
-  push(0x1b, 0x40);
-  push(0x1b, 0x61, 0x01);
-  push(0x1b, 0x45, 0x01);
-  text('POS LOCAL');
-  push(0x1b, 0x45, 0x00);
-  text('Ticket de venta');
-  push(0x1b, 0x61, 0x00);
-  ticketLines(sale).slice(2).forEach(text);
-  push(0x0a, 0x0a, 0x0a);
-  push(0x1d, 0x56, 0x00);
+  push(0x1b, 0x40, 0x1b, 0x4d, 0x00, 0x1b, 0x61, 0x01, 0x1d, 0x21, 0x00);
+  text('FERRETERIA MALOVA, S.A. DE C.V.');
+  text('SUC NOVIEMBRE');
+  text('DONDE USTED COMPRA DE CORAZON');
+  text('BLVD CENTENARIO 2104');
+  text('LOS ANGELES');
+  text('R.F.C. FMA850606P44');
+  text('TEL: (668)2392358');
+  text(`FECHA: ${date}  T:${fitText(sale.folio, 9)}`);
+  text(`HORA: ${time}  VEND: 08`);
+  push(0x1b, 0x64, 0x02, 0x1d, 0x21, 0x00);
+  text('COD  CANT  ART  PRECIO  IMPORTE');
+  text('---------------------------------');
+  sale.items.forEach((item) => {
+    text(`${padRight(item.sku, 5)} ${padLeft(Number(item.quantity).toFixed(2), 5)} ${padRight('PZA', 5)} ${padLeft(ticketMoney(item.unit_price), 5)} ${padLeft(ticketMoney(item.total), 7)}`);
+    text(`${fitText(item.name, 32)} `);
+  });
+  text('---------------------------------');
+  push(0x1b, 0x61, 0x02, 0x1b, 0x21, 0x08);
+  text(`T O T A L : ${ticketMoney(sale.total)}`);
+  push(0x1b, 0x21, 0x00, 0x1d, 0x21, 0x00);
+  text('');
+  push(0x1b, 0x21, 0x01, 0x1d, 0x21, 0x00, 0x1b, 0x61, 0x01);
+  text(`*** IDWEB PARA FACTURAR ${fitText(sale.folio, 12)} ***`);
+  push(0x1b, 0x21, 0x08);
+  text('FACTURA EN');
+  text('WWW.FERRETERIAMALOVA.COM.MX/FACTURACION');
+  push(0x1b, 0x21, 0x00, 0x1b, 0x21, 0x01);
+  text('***GRACIAS POR SU PREFERENCIA***');
+  text('TODA DEVOLUCION CAUSARA 20% DE');
+  text('CARGO Y NO SE ACEPTA DESPUES');
+  text('DE 8 DIAS');
+  push(0x1b, 0x21, 0x00);
+  text('---------------------------------');
+  push(0x1d, 0x56, 0x41, 0x03);
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const bytes = new Uint8Array(totalLength);
@@ -99,16 +175,85 @@ function printTicketFallback(sale) {
 async function printTicket(sale, printSettings = defaultPrintSettings) {
   if (isTauri()) {
     if (printSettings.thermalPrinterName) {
-      await invoke('print_sale_escpos', { printerName: printSettings.thermalPrinterName, sale });
-      return;
+      try {
+        const jobId = await invoke('print_sale_escpos', { printerName: printSettings.thermalPrinterName, sale });
+        await logPrinterEvent({
+          testType: 'escpos-sale',
+          method: 'Formato Malova ESC/POS RAW -> rust-printers -> WinSpool',
+          printerName: printSettings.thermalPrinterName,
+          filePath: 'Temp/pos-local-print/ticket-venta.escpos',
+          fileSize: 0,
+          header: 'ESC@',
+          success: true,
+          jobId,
+          message: `Ticket de venta ${sale.folio} enviado al spooler como RAW.`,
+          error: null
+        });
+        return;
+      } catch (error) {
+        await logPrinterEvent({
+          testType: 'escpos-sale',
+          method: 'Formato Malova ESC/POS RAW -> rust-printers -> WinSpool',
+          printerName: printSettings.thermalPrinterName,
+          filePath: 'Temp/pos-local-print/ticket-venta.escpos',
+          fileSize: 0,
+          header: 'ESC@',
+          success: false,
+          jobId: null,
+          message: `Fallo al enviar ticket de venta ${sale.folio} al spooler.`,
+          error: String(error)
+        });
+        throw error;
+      }
     }
     if (printSettings.thermalPrinterShare) {
-      await invoke('print_escpos_windows', {
-        printerShare: printSettings.thermalPrinterShare,
-        bytes: Array.from(escposTicketBytes(sale))
-      });
-      return;
+      const bytes = Array.from(escposTicketBytes(sale));
+      try {
+        const target = await invoke('print_escpos_windows', {
+          printerShare: printSettings.thermalPrinterShare,
+          bytes
+        });
+        await logPrinterEvent({
+          testType: 'escpos-sale',
+          method: 'Formato Malova ESC/POS RAW -> copy /B impresora compartida',
+          printerName: printSettings.thermalPrinterShare,
+          filePath: target,
+          fileSize: bytes.length,
+          header: 'ESC@',
+          success: true,
+          jobId: null,
+          message: `Ticket de venta ${sale.folio} enviado a impresora compartida.`,
+          error: null
+        });
+        return;
+      } catch (error) {
+        await logPrinterEvent({
+          testType: 'escpos-sale',
+          method: 'Formato Malova ESC/POS RAW -> copy /B impresora compartida',
+          printerName: printSettings.thermalPrinterShare,
+          filePath: '',
+          fileSize: bytes.length,
+          header: 'ESC@',
+          success: false,
+          jobId: null,
+          message: `Fallo al enviar ticket de venta ${sale.folio} a impresora compartida.`,
+          error: String(error)
+        });
+        throw error;
+      }
     }
+    await logPrinterEvent({
+      testType: 'escpos-sale',
+      method: 'Sin impresora ESC/POS configurada -> window.print fallback',
+      printerName: 'Dialogo de Windows',
+      filePath: '',
+      fileSize: 0,
+      header: null,
+      success: true,
+      jobId: null,
+      message: `No hay impresora termica configurada. Ticket ${sale.folio} se enviara por window.print fallback.`,
+      error: null
+    });
   }
   printTicketFallback(sale);
 }
@@ -195,9 +340,26 @@ function printableDocumentHtml(title, documentData) {
 </html>`;
 }
 
-function printPrintableDocument(title, documentData) {
+function printPrintableDocument(title, documentData, logContext = {}) {
   const previousFrame = document.querySelector('.pdf-print-frame');
   previousFrame?.remove();
+
+  const baseLog = {
+    testType: logContext.testType || 'pdf-webview',
+    method: logContext.method || 'PDF guardado -> HTML imprimible -> WebView2 window.print',
+    printerName: logContext.printerName || 'Dialogo de Windows',
+    filePath: logContext.filePath || '',
+    fileSize: logContext.fileSize || 0,
+    header: logContext.header || null,
+    jobId: null
+  };
+
+  logPrinterEvent({
+    ...baseLog,
+    success: true,
+    message: `HTML imprimible preparado para ${title}.`,
+    error: null
+  });
 
   const frame = document.createElement('iframe');
   frame.className = 'pdf-print-frame';
@@ -211,9 +373,40 @@ function printPrintableDocument(title, documentData) {
   document.body.appendChild(frame);
 
   frame.onload = () => {
-    frame.contentWindow?.focus();
-    frame.contentWindow?.print();
-    setTimeout(() => frame.remove(), 1000);
+    try {
+      logPrinterEvent({
+        ...baseLog,
+        success: true,
+        message: 'WebView2 cargo el documento imprimible. Se solicitara window.print().',
+        error: null
+      });
+      frame.contentWindow?.focus();
+      frame.contentWindow?.addEventListener('afterprint', () => {
+        logPrinterEvent({
+          ...baseLog,
+          success: true,
+          message: 'WebView2 reporto afterprint. El dialogo de impresion termino o se cerro.',
+          error: null
+        });
+        frame.remove();
+      }, { once: true });
+      frame.contentWindow?.print();
+      logPrinterEvent({
+        ...baseLog,
+        success: true,
+        message: 'window.print() fue ejecutado. Windows debe mostrar el dialogo de impresion.',
+        error: null
+      });
+      setTimeout(() => frame.remove(), 60000);
+    } catch (error) {
+      logPrinterEvent({
+        ...baseLog,
+        success: false,
+        message: 'Fallo al ejecutar window.print() desde WebView2.',
+        error: String(error)
+      });
+      frame.remove();
+    }
   };
 }
 
@@ -221,8 +414,47 @@ async function printOrSavePdf(title, documentData, fileName, printSettings = def
   const doc = buildPdf(title, documentData);
   const bytes = new Uint8Array(doc.output('arraybuffer'));
   if (isTauri()) {
-    await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
-    if (printSettings.autoPrintPdf) printPrintableDocument(title, documentData);
+    const baseLog = {
+      testType: 'pdf-webview',
+      method: 'jsPDF -> save_pdf_downloads -> HTML imprimible -> WebView2 window.print',
+      printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+      filePath: '',
+      fileSize: bytes.length,
+      header: String.fromCharCode(...bytes.slice(0, 4)),
+      jobId: null
+    };
+
+    let filePath = '';
+    try {
+      filePath = await invoke('save_pdf_downloads', { fileName, bytes: Array.from(bytes) });
+      await logPrinterEvent({
+        ...baseLog,
+        filePath,
+        success: true,
+        message: `PDF generado y guardado en Descargas: ${fileName}.`,
+        error: null
+      });
+    } catch (error) {
+      await logPrinterEvent({
+        ...baseLog,
+        success: false,
+        message: `Fallo al guardar el PDF en Descargas: ${fileName}.`,
+        error: String(error)
+      });
+      throw error;
+    }
+
+    if (printSettings.autoPrintPdf) {
+      printPrintableDocument(title, documentData, { ...baseLog, filePath });
+    } else {
+      await logPrinterEvent({
+        ...baseLog,
+        filePath,
+        success: true,
+        message: 'Impresion automatica desactivada. Solo se guardo el PDF.',
+        error: null
+      });
+    }
     return;
   }
   doc.save(fileName);
@@ -416,6 +648,13 @@ function PrintersSection({ printSettings, setPrintSettings }) {
     }
   };
 
+  useEffect(() => {
+    const refreshLogs = () => loadLogs();
+    window.addEventListener(printerLogsChangedEvent, refreshLogs);
+    loadLogs();
+    return () => window.removeEventListener(printerLogsChangedEvent, refreshLogs);
+  }, []);
+
   const showResult = (result) => {
     setMessage(`${result.success ? 'OK' : 'ERROR'} | ${result.message}${result.error ? ` | ${result.error}` : ''}`);
     loadLogs();
@@ -424,13 +663,43 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   const testPdfPrinter = async () => {
     try {
       const bytes = Array.from(testPdfBytes());
-      await invoke('save_pdf_downloads', { fileName: 'prueba-pdf.pdf', bytes });
+      const filePath = await invoke('save_pdf_downloads', { fileName: 'prueba-pdf.pdf', bytes });
+      await logPrinterEvent({
+        testType: 'pdf-webview-test',
+        method: 'jsPDF -> save_pdf_downloads -> HTML imprimible -> WebView2 window.print',
+        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+        filePath,
+        fileSize: bytes.length,
+        header: String.fromCharCode(...bytes.slice(0, 4)),
+        success: true,
+        jobId: null,
+        message: 'PDF de prueba guardado. Se preparara impresion por WebView2.',
+        error: null
+      });
       printPrintableDocument('Prueba de impresion PDF', {
         folio: 'PRUEBA-PDF',
         items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
+      }, {
+        testType: 'pdf-webview-test',
+        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+        filePath,
+        fileSize: bytes.length,
+        header: String.fromCharCode(...bytes.slice(0, 4))
       });
       setMessage('PDF guardado en Descargas. La impresion se abrio desde WebView2, sin depender de una app externa de PDF.');
     } catch (error) {
+      await logPrinterEvent({
+        testType: 'pdf-webview-test',
+        method: 'jsPDF -> save_pdf_downloads -> HTML imprimible -> WebView2 window.print',
+        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+        filePath: '',
+        fileSize: 0,
+        header: null,
+        success: false,
+        jobId: null,
+        message: 'Fallo la prueba de impresion de documento por WebView2.',
+        error: String(error)
+      });
       setMessage(String(error));
     }
   };

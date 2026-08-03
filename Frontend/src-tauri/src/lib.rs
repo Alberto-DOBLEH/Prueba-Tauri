@@ -58,6 +58,21 @@ struct PrinterTestResult {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrinterLogPayload {
+    test_type: String,
+    method: String,
+    printer_name: Option<String>,
+    file_path: Option<String>,
+    file_size: Option<u64>,
+    header: Option<String>,
+    success: bool,
+    job_id: Option<u64>,
+    message: String,
+    error: Option<String>,
+}
+
 fn safe_file_name(file_name: &str, fallback: &str) -> String {
     let cleaned: String = file_name
         .chars()
@@ -129,6 +144,24 @@ fn append_printer_test_log(result: &PrinterTestResult) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let line = serde_json::to_string(result).map_err(|error| error.to_string())?;
     writeln!(file, "{line}").map_err(|error| error.to_string())
+}
+
+fn record_printer_log(payload: PrinterLogPayload) -> Result<PrinterTestResult, String> {
+    let result = PrinterTestResult {
+        created_at: unix_timestamp().to_string(),
+        test_type: payload.test_type,
+        method: payload.method,
+        printer_name: payload.printer_name.unwrap_or_default(),
+        file_path: payload.file_path.unwrap_or_default(),
+        file_size: payload.file_size.unwrap_or_default(),
+        header: payload.header,
+        success: payload.success,
+        job_id: payload.job_id,
+        message: payload.message,
+        error: payload.error,
+    };
+    append_printer_test_log(&result)?;
+    Ok(result)
 }
 
 fn file_header(bytes: &[u8]) -> Option<String> {
@@ -210,7 +243,34 @@ fn plain_text(value: &str) -> String {
 }
 
 fn money(value: f64) -> String {
-    format!("${value:.2}")
+    format!("{value:.2}")
+}
+
+fn fit_text(value: &str, width: usize) -> String {
+    plain_text(value).chars().take(width).collect()
+}
+
+fn pad_right(value: &str, width: usize) -> String {
+    let fitted = fit_text(value, width);
+    format!("{fitted:<width$}")
+}
+
+fn pad_left(value: &str, width: usize) -> String {
+    let fitted = fit_text(value, width);
+    format!("{fitted:>width$}")
+}
+
+fn push_escpos_text(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(plain_text(value).as_bytes());
+    bytes.push(b'\n');
+}
+
+fn sale_date_time(created_at: &str) -> (String, String) {
+    let normalized = created_at.replace('T', " ");
+    let mut parts = normalized.split_whitespace();
+    let date = parts.next().unwrap_or(created_at).to_string();
+    let time = parts.next().unwrap_or("00:00:00").chars().take(8).collect();
+    (date, time)
 }
 
 fn build_test_escpos_file() -> Result<PathBuf, String> {
@@ -257,68 +317,57 @@ fn build_test_escpos_file() -> Result<PathBuf, String> {
 
 fn build_sale_escpos_file(sale: SalePayload) -> Result<PathBuf, String> {
     let path = temp_print_path("ticket-venta.escpos", "ticket-venta.escpos");
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    let driver = FileDriver::open_with_options(&path, &options).map_err(|error| error.to_string())?;
-    let mut printer = EscposPrinter::new(driver, Protocol::default(), None);
+    let mut bytes = Vec::new();
+    let (date, time) = sale_date_time(&sale.created_at);
+    let _ = (&sale.customer_name, sale.subtotal, sale.tax);
 
-    printer
-        .init()
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::CENTER)
-        .map_err(|error| error.to_string())?
-        .bold(true)
-        .map_err(|error| error.to_string())?
-        .writeln("POS LOCAL")
-        .map_err(|error| error.to_string())?
-        .bold(false)
-        .map_err(|error| error.to_string())?
-        .writeln("Ticket de venta")
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::LEFT)
-        .map_err(|error| error.to_string())?
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("Folio: {}", plain_text(&sale.folio)))
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("Fecha: {}", plain_text(&sale.created_at)))
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("Cliente: {}", plain_text(sale.customer_name.as_deref().unwrap_or("Mostrador"))))
-        .map_err(|error| error.to_string())?
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?;
+    bytes.extend_from_slice(&[0x1b, 0x40, 0x1b, 0x4d, 0x00, 0x1b, 0x61, 0x01, 0x1d, 0x21, 0x00]);
+    push_escpos_text(&mut bytes, "FERRETERIA MALOVA, S.A. DE C.V.");
+    push_escpos_text(&mut bytes, "SUC NOVIEMBRE");
+    push_escpos_text(&mut bytes, "DONDE USTED COMPRA DE CORAZON");
+    push_escpos_text(&mut bytes, "BLVD CENTENARIO 2104");
+    push_escpos_text(&mut bytes, "LOS ANGELES");
+    push_escpos_text(&mut bytes, "R.F.C. FMA850606P44");
+    push_escpos_text(&mut bytes, "TEL: (668)2392358");
+    push_escpos_text(&mut bytes, &format!("FECHA: {}  T:{}", date, fit_text(&sale.folio, 9)));
+    push_escpos_text(&mut bytes, &format!("HORA: {}  VEND: 08", time));
+    bytes.extend_from_slice(&[0x1b, 0x64, 0x02, 0x1d, 0x21, 0x00]);
+    push_escpos_text(&mut bytes, "COD  CANT  ART  PRECIO  IMPORTE");
+    push_escpos_text(&mut bytes, "---------------------------------");
 
     for item in sale.items {
-        printer
-            .writeln(&plain_text(&item.name).chars().take(28).collect::<String>())
-            .map_err(|error| error.to_string())?
-            .writeln(&format!("{} {} x {} = {}", plain_text(&item.sku), item.quantity, money(item.unit_price), money(item.total)))
-            .map_err(|error| error.to_string())?;
+        let line = format!(
+            "{} {} {} {} {}",
+            pad_right(&item.sku, 5),
+            pad_left(&format!("{:.2}", item.quantity as f64), 5),
+            pad_right("PZA", 5),
+            pad_left(&money(item.unit_price), 5),
+            pad_left(&money(item.total), 7)
+        );
+        push_escpos_text(&mut bytes, &line);
+        push_escpos_text(&mut bytes, &format!("{} ", fit_text(&item.name, 32)));
     }
 
-    printer
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("Subtotal: {}", money(sale.subtotal)))
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("IVA:      {}", money(sale.tax)))
-        .map_err(|error| error.to_string())?
-        .bold(true)
-        .map_err(|error| error.to_string())?
-        .writeln(&format!("TOTAL:    {}", money(sale.total)))
-        .map_err(|error| error.to_string())?
-        .bold(false)
-        .map_err(|error| error.to_string())?
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::CENTER)
-        .map_err(|error| error.to_string())?
-        .writeln("Gracias por su compra")
-        .map_err(|error| error.to_string())?
-        .feeds(3)
-        .map_err(|error| error.to_string())?
-        .print_cut()
-        .map_err(|error| error.to_string())?;
+    push_escpos_text(&mut bytes, "---------------------------------");
+    bytes.extend_from_slice(&[0x1b, 0x61, 0x02, 0x1b, 0x21, 0x08]);
+    push_escpos_text(&mut bytes, &format!("T O T A L : {}", money(sale.total)));
+    bytes.extend_from_slice(&[0x1b, 0x21, 0x00, 0x1d, 0x21, 0x00]);
+    push_escpos_text(&mut bytes, "");
+    bytes.extend_from_slice(&[0x1b, 0x21, 0x01, 0x1d, 0x21, 0x00, 0x1b, 0x61, 0x01]);
+    push_escpos_text(&mut bytes, &format!("*** IDWEB PARA FACTURAR {} ***", fit_text(&sale.folio, 12)));
+    bytes.extend_from_slice(&[0x1b, 0x21, 0x08]);
+    push_escpos_text(&mut bytes, "FACTURA EN");
+    push_escpos_text(&mut bytes, "WWW.FERRETERIAMALOVA.COM.MX/FACTURACION");
+    bytes.extend_from_slice(&[0x1b, 0x21, 0x00, 0x1b, 0x21, 0x01]);
+    push_escpos_text(&mut bytes, "***GRACIAS POR SU PREFERENCIA***");
+    push_escpos_text(&mut bytes, "TODA DEVOLUCION CAUSARA 20% DE");
+    push_escpos_text(&mut bytes, "CARGO Y NO SE ACEPTA DESPUES");
+    push_escpos_text(&mut bytes, "DE 8 DIAS");
+    bytes.extend_from_slice(&[0x1b, 0x21, 0x00]);
+    push_escpos_text(&mut bytes, "---------------------------------");
+    bytes.extend_from_slice(&[0x1d, 0x56, 0x41, 0x03]);
+
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
 
     Ok(path)
 }
@@ -611,6 +660,11 @@ fn get_printer_test_logs() -> Result<Vec<PrinterTestResult>, String> {
 }
 
 #[tauri::command]
+fn add_printer_test_log(payload: PrinterLogPayload) -> Result<PrinterTestResult, String> {
+    record_printer_log(payload)
+}
+
+#[tauri::command]
 fn open_printer_test_folder() -> Result<String, String> {
     let path = printer_tests_dir()?;
     #[cfg(target_os = "windows")]
@@ -680,6 +734,7 @@ pub fn run() {
             print_escpos_windows,
             print_test_escpos,
             get_printer_test_logs,
+            add_printer_test_log,
             open_printer_test_folder,
             print_sale_escpos
         ])
