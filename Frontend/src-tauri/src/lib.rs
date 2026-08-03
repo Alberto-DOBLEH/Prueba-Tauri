@@ -157,6 +157,34 @@ fn save_test_pdf(file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn print_pdf_with_windows_shell(path: &PathBuf, printer_name: Option<&str>) -> Result<(), String> {
+    let path_string = path.to_string_lossy().replace('\'', "''");
+    let script = if let Some(printer_name) = printer_name.filter(|name| !name.trim().is_empty()) {
+        let printer_string = printer_name.replace('\'', "''").replace('"', "`\"");
+        format!(
+            "Start-Process -FilePath '{}' -Verb PrintTo -ArgumentList '\"{}\"' -WindowStyle Hidden",
+            path_string, printer_string
+        )
+    } else {
+        format!(
+            "Start-Process -FilePath '{}' -Verb Print -WindowStyle Hidden",
+            path_string
+        )
+    };
+
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .status()
+        .map_err(|error| error.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Windows no pudo abrir la accion de impresion del PDF. Revisa que exista una app PDF con accion Imprimir/PrintTo.".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn printer_state_label(state: &PrinterState) -> String {
     match state {
         PrinterState::READY => "ready",
@@ -366,26 +394,17 @@ fn save_pdf_downloads(file_name: String, bytes: Vec<u8>) -> Result<String, Strin
 
 #[tauri::command]
 fn print_pdf_windows(file_name: String, bytes: Vec<u8>) -> Result<String, String> {
-    if !cfg!(target_os = "windows") {
-        return Err("La impresion automatica de PDF solo esta implementada para Windows.".into());
+    #[cfg(target_os = "windows")]
+    {
+        let path = save_pdf_to_downloads(&file_name, bytes)?;
+        print_pdf_with_windows_shell(&path, None)?;
+        Ok(path.to_string_lossy().to_string())
     }
 
-    let path = save_pdf_to_downloads(&file_name, bytes)?;
-
-    let path_string = path.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "Start-Process -FilePath '{}' -Verb Print -WindowStyle Hidden",
-        path_string
-    );
-    let status = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .status()
-        .map_err(|error| error.to_string())?;
-
-    if status.success() {
-        Ok(path.to_string_lossy().to_string())
-    } else {
-        Err("Windows no pudo enviar el PDF a imprimir. Revisa que exista una app PDF con accion Imprimir.".into())
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (file_name, bytes);
+        Err("La impresion automatica de PDF solo esta implementada para Windows.".into())
     }
 }
 
@@ -395,7 +414,7 @@ fn print_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>)
     {
     let path = save_pdf_to_downloads(&file_name, bytes)?;
     let printer = find_printer(&printer_name)?;
-    printer
+    match printer
         .print_file(
             &path.to_string_lossy(),
             PrinterJobOptions {
@@ -405,6 +424,13 @@ fn print_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>)
             },
         )
         .map_err(|error| format!("{error:?}"))
+    {
+        Ok(job_id) => Ok(job_id),
+        Err(_) => {
+            print_pdf_with_windows_shell(&path, Some(&printer_name))?;
+            Ok(0)
+        }
+    }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -416,7 +442,7 @@ fn print_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>)
 #[tauri::command]
 fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>) -> PrinterTestResult {
     let created_at = unix_timestamp().to_string();
-    let method = "jsPDF -> Tauri bytes -> rust-printers -> WinSpool".to_string();
+    let method = "jsPDF -> archivo PDF -> rust-printers PDF o Windows Shell PrintTo".to_string();
     let header = file_header(&bytes);
     let saved_path = save_test_pdf(&file_name, &bytes);
 
@@ -454,18 +480,41 @@ fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec
                     message: "Trabajo PDF enviado al spooler. Valida fisicamente si la impresora lo proceso.".into(),
                     error: None,
                 },
-                Err(error) => PrinterTestResult {
-                    created_at: created_at.clone(),
-                    test_type: "pdf".into(),
-                    method: method.clone(),
-                    printer_name: printer_name.clone(),
-                    file_path: path.to_string_lossy().to_string(),
-                    file_size,
-                    header: header.clone(),
-                    success: false,
-                    job_id: None,
-                    message: "No se pudo enviar el PDF directo al spooler.".into(),
-                    error: Some(error),
+                Err(error) => {
+                    #[cfg(target_os = "windows")]
+                    let shell_result = print_pdf_with_windows_shell(&path, Some(&printer_name));
+
+                    #[cfg(not(target_os = "windows"))]
+                    let shell_result: Result<(), String> = Err("Windows Shell PrintTo esta disponible solo en Windows.".into());
+
+                    match shell_result {
+                        Ok(()) => PrinterTestResult {
+                            created_at: created_at.clone(),
+                            test_type: "pdf".into(),
+                            method: method.clone(),
+                            printer_name: printer_name.clone(),
+                            file_path: path.to_string_lossy().to_string(),
+                            file_size,
+                            header: header.clone(),
+                            success: true,
+                            job_id: None,
+                            message: "El spooler no acepto PDF crudo; Windows recibio la orden PrintTo mediante la app PDF asociada. Valida fisicamente si salio el documento.".into(),
+                            error: Some(format!("Fallo directo: {error}")),
+                        },
+                        Err(shell_error) => PrinterTestResult {
+                            created_at: created_at.clone(),
+                            test_type: "pdf".into(),
+                            method: method.clone(),
+                            printer_name: printer_name.clone(),
+                            file_path: path.to_string_lossy().to_string(),
+                            file_size,
+                            header: header.clone(),
+                            success: false,
+                            job_id: None,
+                            message: "No se pudo enviar el PDF directo al spooler ni por Windows Shell PrintTo.".into(),
+                            error: Some(format!("Directo: {error} | Shell: {shell_error}")),
+                        },
+                    }
                 },
             }
         }

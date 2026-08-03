@@ -380,7 +380,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>jsPDF -&gt; bytes -&gt; rust-printers</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>jsPDF -&gt; PDF guardado -&gt; spooler o Windows PrintTo</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
       <label>Impresora para PDFs</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
