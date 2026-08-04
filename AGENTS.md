@@ -283,6 +283,8 @@ Importante: en WebView2/`window.print()`, `success: true` significa que la app p
 
 ## Versionado
 
+Regla obligatoria: si se hace cualquier cambio funcional, cambio de codigo del sistema, integracion, recurso empaquetado, flujo de impresion, backend, frontend, Rust/Tauri o configuracion que afecte el comportamiento de la app, se debe subir la version aunque el usuario no lo pida explicitamente. Cambios solo de documentacion que no afectan la funcion del sistema no requieren cambio de version.
+
 Cuando el usuario pida cambiar version para generar EXE/MSI, actualizar todos estos archivos:
 
 - `Frontend/package.json`
