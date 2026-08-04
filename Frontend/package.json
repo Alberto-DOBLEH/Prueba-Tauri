@@ -1,6 +1,6 @@
 {
   "name": "pos-frontend-tauri",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Frontend React y contenedor Tauri para punto de venta local.",
   "type": "module",
   "scripts": {
