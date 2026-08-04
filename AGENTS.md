@@ -304,12 +304,13 @@ cargo check
 
 ## Archivos Locales No Trackeados
 
-En algunas sesiones existen archivos locales de prueba en raiz:
+Los archivos de evidencia y referencia de pruebas reales viven en `evidencias-pruebas/`:
 
 - `logs_primera_prueba.jpeg`: foto de logs de una prueba real.
+- `logs_segunda_prueba.jpeg`: foto de logs de una prueba real con SumatraPDF.
 - `tk-raw.txt`: ejemplo Base64 de ticket ESC/POS.
 
-No incluirlos en commits salvo que el usuario lo pida explicitamente. Fueron usados como evidencia/referencia.
+El recurso que usa la app empaquetada para prueba ESC/POS esta duplicado en `Frontend/src-tauri/resources/escpos/tk-raw.txt`.
 
 ## Flujo Recomendado Para Cambios
 
