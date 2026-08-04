@@ -410,6 +410,57 @@ function printPrintableDocument(title, documentData, logContext = {}) {
   };
 }
 
+async function printPdfWithSumatraOrFallback(title, documentData, fileName, bytes, filePath, printSettings, testType = 'pdf-sumatra') {
+  const printerName = printSettings.pdfPrinterName || '';
+  const header = String.fromCharCode(...bytes.slice(0, 4));
+  try {
+    const result = await invoke('print_pdf_sumatra', {
+      printerName,
+      fileName,
+      bytes: Array.from(bytes),
+      testType
+    });
+    notifyPrinterLogsChanged();
+    if (result.success) return result;
+
+    await logPrinterEvent({
+      testType: `${testType}-fallback`,
+      method: 'SumatraPDF fallo -> HTML imprimible -> WebView2 window.print',
+      printerName: printerName || 'Dialogo de Windows',
+      filePath,
+      fileSize: bytes.length,
+      header,
+      success: true,
+      jobId: null,
+      message: 'SumatraPDF no pudo completar la impresion silenciosa. Se usara fallback con dialogo WebView2.',
+      error: result.error || result.message
+    });
+  } catch (error) {
+    await logPrinterEvent({
+      testType: `${testType}-fallback`,
+      method: 'SumatraPDF invoke fallo -> HTML imprimible -> WebView2 window.print',
+      printerName: printerName || 'Dialogo de Windows',
+      filePath,
+      fileSize: bytes.length,
+      header,
+      success: true,
+      jobId: null,
+      message: 'No se pudo invocar SumatraPDF desde Tauri. Se usara fallback con dialogo WebView2.',
+      error: String(error)
+    });
+  }
+
+  printPrintableDocument(title, documentData, {
+    testType: `${testType}-fallback`,
+    method: 'Fallback HTML imprimible -> WebView2 window.print',
+    printerName: 'Dialogo de Windows',
+    filePath,
+    fileSize: bytes.length,
+    header
+  });
+  return null;
+}
+
 async function printOrSavePdf(title, documentData, fileName, printSettings = defaultPrintSettings) {
   const doc = buildPdf(title, documentData);
   const bytes = new Uint8Array(doc.output('arraybuffer'));
@@ -445,7 +496,7 @@ async function printOrSavePdf(title, documentData, fileName, printSettings = def
     }
 
     if (printSettings.autoPrintPdf) {
-      printPrintableDocument(title, documentData, { ...baseLog, filePath });
+      await printPdfWithSumatraOrFallback(title, documentData, fileName, bytes, filePath, printSettings);
     } else {
       await logPrinterEvent({
         ...baseLog,
@@ -594,7 +645,7 @@ function AdminSection({ refreshKey, printSettings, setPrintSettings }) {
       <h3>Impresion Windows</h3>
       <p>La seleccion principal de impresoras esta en la seccion <code>Impresoras</code>. Este campo queda como respaldo para impresoras compartidas antiguas.</p>
       <input value={printSettings.thermalPrinterShare} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterShare: event.target.value })} placeholder="Respaldo: impresora compartida tipo POS58" />
-      <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Abrir dialogo de impresion para cotizaciones y reportes cuando se use Tauri</label>
+      <label><input type="checkbox" checked={printSettings.autoPrintPdf} onChange={(event) => setPrintSettings({ ...printSettings, autoPrintPdf: event.target.checked })} /> Imprimir cotizaciones y reportes automaticamente con SumatraPDF cuando se use Tauri</label>
     </div>
     {dashboard && <div className="stats">
       <article><strong>{dashboard.salesSummary.count}</strong><span>Ventas</span></article>
@@ -662,42 +713,36 @@ function PrintersSection({ printSettings, setPrintSettings }) {
 
   const testPdfPrinter = async () => {
     try {
-      const bytes = Array.from(testPdfBytes());
-      const filePath = await invoke('save_pdf_downloads', { fileName: 'prueba-pdf.pdf', bytes });
+      const bytes = testPdfBytes();
+      const filePath = await invoke('save_pdf_downloads', { fileName: 'prueba-pdf.pdf', bytes: Array.from(bytes) });
       await logPrinterEvent({
-        testType: 'pdf-webview-test',
-        method: 'jsPDF -> save_pdf_downloads -> HTML imprimible -> WebView2 window.print',
-        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+        testType: 'pdf-sumatra-test',
+        method: 'jsPDF -> save_pdf_downloads -> SumatraPDF portable -print-to -silent',
+        printerName: printSettings.pdfPrinterName || 'Predeterminada',
         filePath,
         fileSize: bytes.length,
         header: String.fromCharCode(...bytes.slice(0, 4)),
         success: true,
         jobId: null,
-        message: 'PDF de prueba guardado. Se preparara impresion por WebView2.',
+        message: 'PDF de prueba guardado. Se intentara impresion silenciosa con SumatraPDF.',
         error: null
       });
-      printPrintableDocument('Prueba de impresion PDF', {
+      await printPdfWithSumatraOrFallback('Prueba de impresion PDF', {
         folio: 'PRUEBA-PDF',
         items: [{ sku: 'TEST', name: 'Documento de prueba para reportes y cotizaciones', quantity: 1, price: 0, total: 0 }]
-      }, {
-        testType: 'pdf-webview-test',
-        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
-        filePath,
-        fileSize: bytes.length,
-        header: String.fromCharCode(...bytes.slice(0, 4))
-      });
-      setMessage('PDF guardado en Descargas. La impresion se abrio desde WebView2, sin depender de una app externa de PDF.');
+      }, 'prueba-pdf.pdf', bytes, filePath, printSettings, 'pdf-sumatra-test');
+      setMessage('PDF guardado en Descargas. Se intento impresion silenciosa con SumatraPDF; si fallo, se abrio WebView2 como respaldo.');
     } catch (error) {
       await logPrinterEvent({
-        testType: 'pdf-webview-test',
-        method: 'jsPDF -> save_pdf_downloads -> HTML imprimible -> WebView2 window.print',
-        printerName: printSettings.pdfPrinterName || 'Dialogo de Windows',
+        testType: 'pdf-sumatra-test',
+        method: 'jsPDF -> save_pdf_downloads -> SumatraPDF portable -print-to -silent',
+        printerName: printSettings.pdfPrinterName || 'Predeterminada',
         filePath: '',
         fileSize: 0,
         header: null,
         success: false,
         jobId: null,
-        message: 'Fallo la prueba de impresion de documento por WebView2.',
+        message: 'Fallo la prueba de impresion silenciosa de documento con SumatraPDF.',
         error: String(error)
       });
       setMessage(String(error));
@@ -726,9 +771,9 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; HTML imprimible -&gt; WebView2 print</code>. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; SumatraPDF portable -&gt; impresion silenciosa</code> con fallback WebView2. ESC/POS: <code>escpos-rs -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
-      <label>Impresora para PDFs directos (diagnostico anterior)</label>
+      <label>Impresora para PDFs silenciosos</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
         <option value="">Selecciona impresora PDF</option>
         {printers.map((printer) => <option key={`pdf-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}

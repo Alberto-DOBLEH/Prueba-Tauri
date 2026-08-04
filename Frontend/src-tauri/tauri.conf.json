@@ -26,6 +26,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "resources": ["resources/sumatrapdf/*"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "category": "Business",
     "windows": {

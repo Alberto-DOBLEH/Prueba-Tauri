@@ -11,6 +11,7 @@ use printers::{
     get_default_printer, get_printer_by_name, get_printers,
 };
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 #[derive(Serialize)]
 struct SystemPrinterInfo {
@@ -187,6 +188,106 @@ fn save_test_pdf(file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     };
     fs::write(&path, bytes).map_err(|error| error.to_string())?;
     Ok(path)
+}
+
+fn printer_result(
+    test_type: &str,
+    method: &str,
+    printer_name: &str,
+    file_path: &str,
+    file_size: u64,
+    header: Option<String>,
+    success: bool,
+    message: &str,
+    error: Option<String>,
+) -> PrinterTestResult {
+    PrinterTestResult {
+        created_at: unix_timestamp().to_string(),
+        test_type: test_type.into(),
+        method: method.into(),
+        printer_name: printer_name.into(),
+        file_path: file_path.into(),
+        file_size,
+        header,
+        success,
+        job_id: None,
+        message: message.into(),
+        error,
+    }
+}
+
+fn append_and_return_log(mut result: PrinterTestResult) -> PrinterTestResult {
+    if let Err(error) = append_printer_test_log(&result) {
+        result.success = false;
+        result.message = format!("{} Ademas fallo guardar log: {error}", result.message);
+        result.error = Some(match result.error {
+            Some(existing) => format!("{existing} | Log: {error}"),
+            None => error,
+        });
+    }
+    result
+}
+
+fn sumatra_pdf_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("resources").join("sumatrapdf").join("SumatraPDF.exe"));
+        candidates.push(resource_dir.join("resources").join("sumatrapdf").join("SumatraPDF-3.6.1-64.exe"));
+        candidates.push(resource_dir.join("sumatrapdf").join("SumatraPDF.exe"));
+        candidates.push(resource_dir.join("sumatrapdf").join("SumatraPDF-3.6.1-64.exe"));
+        candidates.push(resource_dir.join("SumatraPDF.exe"));
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(app_dir) = current_exe.parent() {
+            candidates.push(app_dir.join("resources").join("sumatrapdf").join("SumatraPDF.exe"));
+            candidates.push(app_dir.join("resources").join("sumatrapdf").join("SumatraPDF-3.6.1-64.exe"));
+            candidates.push(app_dir.join("sumatrapdf").join("SumatraPDF.exe"));
+            candidates.push(app_dir.join("sumatrapdf").join("SumatraPDF-3.6.1-64.exe"));
+        }
+    }
+
+    candidates
+}
+
+fn find_sumatra_pdf_in_dir(dir: &PathBuf) -> Option<PathBuf> {
+    fs::read_dir(dir).ok()?.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| {
+        path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| {
+                    let lower = name.to_ascii_lowercase();
+                    lower.starts_with("sumatrapdf") && lower.ends_with(".exe")
+                })
+                .unwrap_or(false)
+    })
+}
+
+fn find_sumatra_pdf(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let candidates = sumatra_pdf_candidates(app);
+    if let Some(path) = candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+    {
+        return Ok(path);
+    }
+
+    for candidate in &candidates {
+        if let Some(dir) = candidate.parent().map(PathBuf::from) {
+            if let Some(path) = find_sumatra_pdf_in_dir(&dir) {
+                return Ok(path);
+            }
+        }
+    }
+
+    let checked = candidates
+        .iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Err(format!("No se encontro SumatraPDF portable empaquetado. Rutas revisadas: {checked}"))
 }
 
 #[cfg(target_os = "windows")]
@@ -489,6 +590,137 @@ fn print_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>)
 }
 
 #[tauri::command]
+fn print_pdf_sumatra(
+    app: tauri::AppHandle,
+    printer_name: String,
+    file_name: String,
+    bytes: Vec<u8>,
+    test_type: Option<String>,
+) -> PrinterTestResult {
+    let method = "jsPDF -> archivo PDF -> SumatraPDF portable -print-to -silent";
+    let test_type = test_type.unwrap_or_else(|| "pdf-sumatra".into());
+    let header = file_header(&bytes);
+    let file_size = bytes.len() as u64;
+
+    let path = match save_pdf_to_downloads(&file_name, bytes) {
+        Ok(path) => path,
+        Err(error) => {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                printer_name.trim(),
+                "",
+                file_size,
+                header,
+                false,
+                "No se pudo guardar el PDF antes de imprimir con SumatraPDF.",
+                Some(error),
+            ));
+        }
+    };
+
+    let file_path = path.to_string_lossy().to_string();
+    if !cfg!(target_os = "windows") {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            printer_name.trim(),
+            &file_path,
+            file_size,
+            header,
+            false,
+            "La impresion silenciosa con SumatraPDF solo esta disponible en Windows.",
+            None,
+        ));
+    }
+
+    let sumatra_path = match find_sumatra_pdf(&app) {
+        Ok(path) => path,
+        Err(error) => {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                printer_name.trim(),
+                &file_path,
+                file_size,
+                header,
+                false,
+                "No se pudo encontrar SumatraPDF portable empaquetado.",
+                Some(error),
+            ));
+        }
+    };
+
+    let mut command = Command::new(&sumatra_path);
+    let trimmed_printer = printer_name.trim();
+    if trimmed_printer.is_empty() {
+        command.arg("-print-to-default");
+    } else {
+        command.args(["-print-to", trimmed_printer]);
+    }
+    command
+        .args(["-print-settings", "fit", "-silent", "-exit-when-done"])
+        .arg(&path);
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+                &file_path,
+                file_size,
+                header,
+                false,
+                "No se pudo ejecutar SumatraPDF portable.",
+                Some(format!("{} | Binario: {}", error, sumatra_path.to_string_lossy())),
+            ));
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let exit_code = output.status.code().map_or("sin_codigo".into(), |code| code.to_string());
+
+    if output.status.success() {
+        append_and_return_log(printer_result(
+            &test_type,
+            method,
+            if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+            &file_path,
+            file_size,
+            header,
+            true,
+            &format!(
+                "SumatraPDF envio el PDF a impresion silenciosa. Exit code: {exit_code}. Binario: {}",
+                sumatra_path.to_string_lossy()
+            ),
+            if stdout.is_empty() && stderr.is_empty() {
+                None
+            } else {
+                Some(format!("stdout: {stdout} | stderr: {stderr}"))
+            },
+        ))
+    } else {
+        append_and_return_log(printer_result(
+            &test_type,
+            method,
+            if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+            &file_path,
+            file_size,
+            header,
+            false,
+            &format!("SumatraPDF termino con error. Exit code: {exit_code}."),
+            Some(format!(
+                "Binario: {} | stdout: {stdout} | stderr: {stderr}",
+                sumatra_path.to_string_lossy()
+            )),
+        ))
+    }
+}
+
+#[tauri::command]
 fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>) -> PrinterTestResult {
     let created_at = unix_timestamp().to_string();
     let method = "jsPDF -> archivo PDF -> rust-printers PDF o Windows Shell PrintTo".to_string();
@@ -730,6 +962,7 @@ pub fn run() {
             save_pdf_downloads,
             print_pdf_windows,
             print_pdf_to_printer,
+            print_pdf_sumatra,
             print_test_pdf_to_printer,
             print_escpos_windows,
             print_test_escpos,

@@ -228,6 +228,15 @@ Opciones futuras discutidas:
 - Implementar impresion nativa con WebView2/Win32 desde Rust.
 - Renderizar PDF/HTML a imagen y mandar a Win32 print.
 
+Branch experimental Sumatra:
+
+- Rama: `feature/sumatra-pdf-printing`.
+- Ruta esperada del binario: `Frontend/src-tauri/resources/sumatrapdf/SumatraPDF.exe`.
+- Config Tauri empaqueta `resources/sumatrapdf/*`.
+- Comando Rust: `print_pdf_sumatra`.
+- Flujo: `jsPDF -> PDF en Descargas -> SumatraPDF portable -print-to/-print-to-default -silent -exit-when-done`.
+- Si Sumatra no existe o falla, el frontend usa fallback HTML/WebView2 con dialogo y registra logs.
+
 Condicion del usuario:
 
 - No instalar aplicaciones externas aparte de Tauri.
