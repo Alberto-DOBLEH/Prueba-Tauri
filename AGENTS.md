@@ -166,7 +166,7 @@ Comandos Tauri/Rust importantes en `Frontend/src-tauri/src/lib.rs`:
 - `print_pdf_windows`: intento legacy con Shell `Print`; no confiar para flujo final sin app PDF.
 - `print_pdf_to_printer`: intento legacy directo al spooler para PDF; solo sirve si driver acepta PDF nativo.
 - `print_test_pdf_to_printer`: prueba legacy PDF/spooler con fallback Shell.
-- `print_test_escpos`: prueba ESC/POS nativa.
+- `print_test_escpos`: prueba ESC/POS nativa usando `resources/escpos/tk-raw.txt` decodificado desde Base64.
 - `print_sale_escpos`: imprime venta como ESC/POS RAW por `printers`.
 - `print_escpos_windows`: respaldo por impresora compartida con `copy /B`.
 - `get_printer_test_logs`: lee logs.
@@ -175,7 +175,7 @@ Comandos Tauri/Rust importantes en `Frontend/src-tauri/src/lib.rs`:
 
 ## Impresion ESC/POS
 
-El ticket de venta actual sigue el ejemplo del archivo local `tk-raw.txt`, que es un ticket ESC/POS en Base64 usado como referencia.
+El ticket de venta actual sigue el ejemplo de `tk-raw.txt`, que es un ticket ESC/POS en Base64 usado como referencia. La prueba ESC/POS imprime el recurso empaquetado `Frontend/src-tauri/resources/escpos/tk-raw.txt` decodificado como bytes RAW.
 
 Puntos tecnicos:
 

@@ -1,10 +1,5 @@
 use std::{fs, io::Write, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
 
-use escpos::{
-    driver::FileDriver,
-    printer::Printer as EscposPrinter,
-    utils::{JustifyMode, Protocol},
-};
 #[cfg(target_os = "windows")]
 use printers::{
     common::base::{job::PrinterJobOptions, printer::PrinterState},
@@ -172,6 +167,38 @@ fn file_header(bytes: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes[..bytes.len().min(4)]).to_string())
 }
 
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+
+    for byte in input.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        if byte == b'=' {
+            break;
+        }
+        let value = base64_value(byte).ok_or_else(|| format!("Caracter Base64 invalido: {}", byte as char))?;
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    Ok(output)
+}
+
 fn save_pdf_to_downloads(file_name: &str, bytes: Vec<u8>) -> Result<PathBuf, String> {
     let path = downloads_path(file_name, "documento.pdf")?;
     fs::write(&path, bytes).map_err(|error| error.to_string())?;
@@ -291,6 +318,32 @@ fn find_sumatra_pdf(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn escape_powershell_single(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_print_jobs(printer_name: &str) -> Result<String, String> {
+    let escaped_printer = escape_powershell_single(printer_name);
+    let script = format!(
+        "Get-PrintJob -PrinterName '{}' | Select-Object -First 5 ID,Name,JobStatus,SubmittedTime | ConvertTo-Json -Compress",
+        escaped_printer
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        Ok(if stdout.is_empty() { "Sin trabajos activos detectados".into() } else { stdout })
+    } else {
+        Err(if stderr.is_empty() { "Get-PrintJob fallo sin detalle".into() } else { stderr })
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn print_pdf_with_windows_shell(path: &PathBuf, printer_name: Option<&str>) -> Result<(), String> {
     let path_string = path.to_string_lossy().replace('\'', "''");
     let script = if let Some(printer_name) = printer_name.filter(|name| !name.trim().is_empty()) {
@@ -375,44 +428,9 @@ fn sale_date_time(created_at: &str) -> (String, String) {
 }
 
 fn build_test_escpos_file() -> Result<PathBuf, String> {
-    let path = printer_test_path("test-ticket", "escpos")?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    let driver = FileDriver::open_with_options(&path, &options).map_err(|error| error.to_string())?;
-    let mut printer = EscposPrinter::new(driver, Protocol::default(), None);
-    printer
-        .init()
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::CENTER)
-        .map_err(|error| error.to_string())?
-        .bold(true)
-        .map_err(|error| error.to_string())?
-        .writeln("POS LOCAL")
-        .map_err(|error| error.to_string())?
-        .bold(false)
-        .map_err(|error| error.to_string())?
-        .writeln("Prueba ESC/POS")
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::LEFT)
-        .map_err(|error| error.to_string())?
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?
-        .writeln("Impresion desde Tauri + Rust")
-        .map_err(|error| error.to_string())?
-        .writeln("Driver: escpos-rs")
-        .map_err(|error| error.to_string())?
-        .writeln("Spooler: rust-printers")
-        .map_err(|error| error.to_string())?
-        .writeln("------------------------------")
-        .map_err(|error| error.to_string())?
-        .justify(JustifyMode::CENTER)
-        .map_err(|error| error.to_string())?
-        .writeln("OK")
-        .map_err(|error| error.to_string())?
-        .feeds(3)
-        .map_err(|error| error.to_string())?
-        .print_cut()
-        .map_err(|error| error.to_string())?;
+    let path = printer_test_path("test-ticket-tk-raw", "escpos")?;
+    let bytes = decode_base64(include_str!("../resources/escpos/tk-raw.txt"))?;
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
     Ok(path)
 }
 
@@ -651,16 +669,58 @@ fn print_pdf_sumatra(
         }
     };
 
-    let mut command = Command::new(&sumatra_path);
     let trimmed_printer = printer_name.trim();
-    if trimmed_printer.is_empty() {
-        command.arg("-print-to-default");
-    } else {
-        command.args(["-print-to", trimmed_printer]);
+    #[cfg(target_os = "windows")]
+    let mut selected_printer = if trimmed_printer.is_empty() { "Predeterminada".to_string() } else { trimmed_printer.to_string() };
+    #[cfg(not(target_os = "windows"))]
+    let selected_printer = if trimmed_printer.is_empty() { "Predeterminada".to_string() } else { trimmed_printer.to_string() };
+
+    #[cfg(target_os = "windows")]
+    {
+        if trimmed_printer.is_empty() {
+            match get_default_printer() {
+                Some(printer) => selected_printer = printer.system_name,
+                None => {
+                    return append_and_return_log(printer_result(
+                        &test_type,
+                        method,
+                        "Predeterminada",
+                        &file_path,
+                        file_size,
+                        header,
+                        false,
+                        "No hay impresora predeterminada para usar con SumatraPDF.",
+                        None,
+                    ));
+                }
+            }
+        } else if let Err(error) = find_printer(trimmed_printer) {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                trimmed_printer,
+                &file_path,
+                file_size,
+                header,
+                false,
+                "La impresora seleccionada para SumatraPDF no existe en Windows.",
+                Some(error),
+            ));
+        }
     }
-    command
-        .args(["-print-settings", "fit", "-silent", "-exit-when-done"])
-        .arg(&path);
+
+    let mut args = vec!["-silent".to_string(), "-exit-when-done".to_string(), "-print-settings".to_string(), "fit".to_string()];
+    if trimmed_printer.is_empty() {
+        args.push("-print-to-default".to_string());
+    } else {
+        args.push("-print-to".to_string());
+        args.push(trimmed_printer.to_string());
+    }
+    args.push(file_path.clone());
+
+    let command_line = format!("{} {}", sumatra_path.to_string_lossy(), args.join(" "));
+    let mut command = Command::new(&sumatra_path);
+    command.args(&args);
 
     let output = match command.output() {
         Ok(output) => output,
@@ -668,13 +728,13 @@ fn print_pdf_sumatra(
             return append_and_return_log(printer_result(
                 &test_type,
                 method,
-                if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+                &selected_printer,
                 &file_path,
                 file_size,
                 header,
                 false,
                 "No se pudo ejecutar SumatraPDF portable.",
-                Some(format!("{} | Binario: {}", error, sumatra_path.to_string_lossy())),
+                Some(format!("{} | Comando: {}", error, command_line)),
             ));
         }
     };
@@ -683,18 +743,28 @@ fn print_pdf_sumatra(
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let exit_code = output.status.code().map_or("sin_codigo".into(), |code| code.to_string());
 
+    #[cfg(target_os = "windows")]
+    let queue_status = windows_print_jobs(&selected_printer);
+
+    #[cfg(not(target_os = "windows"))]
+    let queue_status: Result<String, String> = Err("Consulta de cola disponible solo en Windows".into());
+
+    let queue_message = match &queue_status {
+        Ok(status) => format!("Cola Windows: {status}"),
+        Err(error) => format!("No se pudo consultar cola Windows: {error}"),
+    };
+
     if output.status.success() {
         append_and_return_log(printer_result(
             &test_type,
             method,
-            if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+            &selected_printer,
             &file_path,
             file_size,
             header,
             true,
             &format!(
-                "SumatraPDF envio el PDF a impresion silenciosa. Exit code: {exit_code}. Binario: {}",
-                sumatra_path.to_string_lossy()
+                "SumatraPDF termino OK. Exit code: {exit_code}. {queue_message}. Comando: {command_line}"
             ),
             if stdout.is_empty() && stderr.is_empty() {
                 None
@@ -706,15 +776,14 @@ fn print_pdf_sumatra(
         append_and_return_log(printer_result(
             &test_type,
             method,
-            if trimmed_printer.is_empty() { "Predeterminada" } else { trimmed_printer },
+            &selected_printer,
             &file_path,
             file_size,
             header,
             false,
-            &format!("SumatraPDF termino con error. Exit code: {exit_code}."),
+            &format!("SumatraPDF termino con error. Exit code: {exit_code}. {queue_message}."),
             Some(format!(
-                "Binario: {} | stdout: {stdout} | stderr: {stderr}",
-                sumatra_path.to_string_lossy()
+                "Comando: {command_line} | stdout: {stdout} | stderr: {stderr}"
             )),
         ))
     }
@@ -823,7 +892,7 @@ fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec
 #[tauri::command]
 fn print_test_escpos(printer_name: String) -> PrinterTestResult {
     let created_at = unix_timestamp().to_string();
-    let method = "escpos-rs -> archivo .escpos -> rust-printers RAW -> WinSpool".to_string();
+    let method = "tk-raw.txt Base64 -> archivo .escpos -> rust-printers RAW -> WinSpool".to_string();
     let mut result = match build_test_escpos_file() {
         Ok(path) => {
             let file_size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or_default();
@@ -838,7 +907,7 @@ fn print_test_escpos(printer_name: String) -> PrinterTestResult {
                     header: None,
                     success: true,
                     job_id: Some(job_id),
-                    message: "Trabajo ESC/POS enviado como RAW. Valida fisicamente si salio el ticket.".into(),
+                    message: "Ticket tk-raw ESC/POS enviado como RAW. Valida fisicamente si salio el formato Malova.".into(),
                     error: None,
                 },
                 Err(error) => PrinterTestResult {
@@ -851,7 +920,7 @@ fn print_test_escpos(printer_name: String) -> PrinterTestResult {
                     header: None,
                     success: false,
                     job_id: None,
-                    message: "No se pudo enviar el ticket ESC/POS al spooler.".into(),
+                    message: "No se pudo enviar el ticket tk-raw ESC/POS al spooler.".into(),
                     error: Some(error),
                 },
             }
@@ -866,7 +935,7 @@ fn print_test_escpos(printer_name: String) -> PrinterTestResult {
             header: None,
             success: false,
             job_id: None,
-            message: "No se pudo generar el archivo ESC/POS de prueba.".into(),
+            message: "No se pudo decodificar/generar el archivo ESC/POS desde tk-raw.txt.".into(),
             error: Some(error),
         },
     };
