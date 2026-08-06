@@ -237,6 +237,15 @@ Branch experimental Sumatra:
 - Flujo: `jsPDF -> PDF en Descargas -> SumatraPDF portable -print-to/-print-to-default -silent -exit-when-done`.
 - Si Sumatra no existe o falla, el frontend usa fallback HTML/WebView2 con dialogo y registra logs.
 
+Branch experimental PDFtoPrinter:
+
+- Rama: `feature/pdftoprinter-sidecar`.
+- Ruta esperada del binario: `Frontend/src-tauri/resources/pdftoprinter/PDFtoPrinter.exe`.
+- Config Tauri empaqueta `resources/pdftoprinter/*`.
+- Comando Rust: `print_pdf_pdftoprinter`.
+- Flujo: `PDF bytes -> PDF temporal -> PDFtoPrinter.exe "archivo.pdf" "impresora" -> spooler Windows`.
+- El PDF temporal se elimina al terminar el proceso; los logs registran comando, exit code, stdout/stderr y etapa de fallo.
+
 Condicion del usuario:
 
 - No instalar aplicaciones externas aparte de Tauri.

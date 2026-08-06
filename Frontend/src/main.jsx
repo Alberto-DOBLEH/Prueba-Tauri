@@ -749,6 +749,34 @@ function PrintersSection({ printSettings, setPrintSettings }) {
     }
   };
 
+  const testPdfToPrinter = async () => {
+    try {
+      if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para PDFtoPrinter.');
+      const bytes = testPdfBytes();
+      const result = await invoke('print_pdf_pdftoprinter', {
+        printerName: printSettings.pdfPrinterName,
+        fileName: 'prueba-pdftoprinter.pdf',
+        bytes: Array.from(bytes),
+        testType: 'pdf-pdftoprinter-test'
+      });
+      showResult(result);
+    } catch (error) {
+      await logPrinterEvent({
+        testType: 'pdf-pdftoprinter-test',
+        method: 'PDF bytes -> PDF temporal -> PDFtoPrinter.exe ruta impresora',
+        printerName: printSettings.pdfPrinterName || 'Sin impresora',
+        filePath: '',
+        fileSize: 0,
+        header: null,
+        success: false,
+        jobId: null,
+        message: 'Fallo la prueba de impresion con PDFtoPrinter.',
+        error: String(error)
+      });
+      setMessage(String(error));
+    }
+  };
+
   const testEscpos = async () => {
     try {
       if (!printSettings.thermalPrinterName) throw new Error('Selecciona una impresora termica ESC/POS.');
@@ -771,7 +799,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; SumatraPDF portable -&gt; impresion silenciosa</code> con fallback WebView2. ESC/POS: <code>tk-raw.txt -&gt; .escpos -&gt; RAW spooler</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; SumatraPDF portable</code> o <code>PDF temporal -&gt; PDFtoPrinter.exe</code>. ESC/POS: <code>tk-raw.txt -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
       <label>Impresora para PDFs silenciosos</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
@@ -785,6 +813,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
       </select>
       <div className="actions">
         <button onClick={testPdfPrinter}>Probar impresion documento</button>
+        <button className="secondary" onClick={testPdfToPrinter}>Probar PDFtoPrinter</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
         <button className="secondary" onClick={openTestFolder}>Abrir carpeta pruebas</button>
         <button className="secondary" onClick={loadLogs}>Ver logs</button>

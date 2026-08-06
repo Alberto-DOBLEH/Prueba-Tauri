@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "pos_local"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "escpos",
  "printers",

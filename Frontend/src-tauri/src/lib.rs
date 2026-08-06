@@ -1,4 +1,11 @@
-use std::{fs, io::Write, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(target_os = "windows")]
 use printers::{
@@ -93,6 +100,15 @@ fn temp_print_path(file_name: &str, fallback: &str) -> PathBuf {
     path
 }
 
+fn temp_print_job_path(prefix: &str, extension: &str) -> Result<PathBuf, String> {
+    let mut path = std::env::temp_dir();
+    path.push("pos-local-print");
+    path.push("pdf-pending");
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    path.push(format!("{}-{}.{}", safe_file_name(prefix, "documento"), unix_timestamp_millis(), extension));
+    Ok(path)
+}
+
 fn downloads_path(file_name: &str, fallback: &str) -> Result<PathBuf, String> {
     let base = if cfg!(target_os = "windows") {
         std::env::var("USERPROFILE")
@@ -113,6 +129,13 @@ fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
         .unwrap_or_default()
 }
 
@@ -165,6 +188,25 @@ fn file_header(bytes: &[u8]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&bytes[..bytes.len().min(4)]).to_string())
+}
+
+fn validate_pdf_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("El PDF esta vacio.".into());
+    }
+    if bytes.len() < 5 || &bytes[..5] != b"%PDF-" {
+        return Err("Los bytes no tienen firma PDF valida (%PDF-).".into());
+    }
+    Ok(())
+}
+
+fn read_optional_pipe(pipe: Option<impl Read>) -> String {
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    let mut output = String::new();
+    let _ = pipe.read_to_string(&mut output);
+    output.trim().to_string()
 }
 
 fn base64_value(byte: u8) -> Option<u8> {
@@ -315,6 +357,40 @@ fn find_sumatra_pdf(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .collect::<Vec<_>>()
         .join(" | ");
     Err(format!("No se encontro SumatraPDF portable empaquetado. Rutas revisadas: {checked}"))
+}
+
+fn pdftoprinter_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
+        candidates.push(resource_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
+        candidates.push(resource_dir.join("PDFtoPrinter.exe"));
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(app_dir) = current_exe.parent() {
+            candidates.push(app_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
+            candidates.push(app_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
+        }
+    }
+
+    candidates
+}
+
+fn find_pdftoprinter(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let candidates = pdftoprinter_candidates(app);
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .ok_or_else(|| {
+            let checked = candidates
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("No se encontro PDFtoPrinter.exe empaquetado. Rutas revisadas: {checked}")
+        })
 }
 
 #[cfg(target_os = "windows")]
@@ -790,6 +866,236 @@ fn print_pdf_sumatra(
 }
 
 #[tauri::command]
+fn print_pdf_pdftoprinter(
+    app: tauri::AppHandle,
+    printer_name: String,
+    file_name: String,
+    bytes: Vec<u8>,
+    test_type: Option<String>,
+) -> PrinterTestResult {
+    let method = "PDF bytes -> PDF temporal -> PDFtoPrinter.exe ruta impresora";
+    let test_type = test_type.unwrap_or_else(|| "pdf-pdftoprinter".into());
+    let header = file_header(&bytes);
+    let file_size = bytes.len() as u64;
+    let trimmed_printer = printer_name.trim();
+
+    if !cfg!(target_os = "windows") {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            "",
+            file_size,
+            header,
+            false,
+            "PDFtoPrinter solo esta disponible para pruebas Windows.",
+            None,
+        ));
+    }
+
+    if let Err(error) = validate_pdf_bytes(&bytes) {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            "",
+            file_size,
+            header,
+            false,
+            "No se imprimio porque el contenido no es un PDF valido.",
+            Some(error),
+        ));
+    }
+
+    if trimmed_printer.is_empty() {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            "",
+            "",
+            file_size,
+            header,
+            false,
+            "Selecciona una impresora para imprimir con PDFtoPrinter.",
+            None,
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Err(error) = find_printer(trimmed_printer) {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            "",
+            file_size,
+            header,
+            false,
+            "La impresora seleccionada no existe en Windows.",
+            Some(error),
+        ));
+    }
+
+    let executable = match find_pdftoprinter(&app) {
+        Ok(path) => path,
+        Err(error) => {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                trimmed_printer,
+                "",
+                file_size,
+                header,
+                false,
+                "No se pudo encontrar PDFtoPrinter.exe empaquetado.",
+                Some(error),
+            ));
+        }
+    };
+
+    let safe_prefix = if file_name.trim().is_empty() { "pdftoprinter" } else { file_name.trim().trim_end_matches(".pdf") };
+    let pdf_path = match temp_print_job_path(safe_prefix, "pdf") {
+        Ok(path) => path,
+        Err(error) => {
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                trimmed_printer,
+                "",
+                file_size,
+                header,
+                false,
+                "No se pudo crear ruta temporal para PDFtoPrinter.",
+                Some(error),
+            ));
+        }
+    };
+
+    if let Err(error) = fs::write(&pdf_path, &bytes) {
+        return append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            &pdf_path.to_string_lossy(),
+            file_size,
+            header,
+            false,
+            "No se pudo escribir PDF temporal para PDFtoPrinter.",
+            Some(error.to_string()),
+        ));
+    }
+
+    let command_line = format!(
+        "{} \"{}\" \"{}\"",
+        executable.to_string_lossy(),
+        pdf_path.to_string_lossy(),
+        trimmed_printer
+    );
+    let mut child = match Command::new(&executable)
+        .arg(&pdf_path)
+        .arg(trimmed_printer)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_file(&pdf_path);
+            return append_and_return_log(printer_result(
+                &test_type,
+                method,
+                trimmed_printer,
+                &pdf_path.to_string_lossy(),
+                file_size,
+                header,
+                false,
+                "No se pudo iniciar PDFtoPrinter.exe.",
+                Some(format!("{error} | Comando: {command_line}")),
+            ));
+        }
+    };
+
+    let timeout = Duration::from_secs(45);
+    let started = SystemTime::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                let elapsed = SystemTime::now().duration_since(started).unwrap_or_default();
+                if elapsed >= timeout {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child.wait().map_err(|error| format!("Timeout y fallo wait: {error}"));
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => break Err(error.to_string()),
+        }
+    };
+
+    let stdout = read_optional_pipe(child.stdout.take());
+    let stderr = read_optional_pipe(child.stderr.take());
+    let cleanup = fs::remove_file(&pdf_path).map_err(|error| error.to_string());
+    let cleanup_message = match cleanup {
+        Ok(()) => "PDF temporal eliminado".to_string(),
+        Err(error) => format!("No se pudo eliminar PDF temporal: {error}"),
+    };
+
+    match status {
+        Ok(status) if status.success() => append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            &pdf_path.to_string_lossy(),
+            file_size,
+            header,
+            true,
+            &format!("PDFtoPrinter termino OK. {}. Comando: {}", cleanup_message, command_line),
+            if stdout.is_empty() && stderr.is_empty() {
+                None
+            } else {
+                Some(format!("stdout: {stdout} | stderr: {stderr}"))
+            },
+        )),
+        Ok(status) if timed_out => append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            &pdf_path.to_string_lossy(),
+            file_size,
+            header,
+            false,
+            &format!("PDFtoPrinter supero timeout de {} segundos y fue terminado. Exit code: {:?}. {}.", timeout.as_secs(), status.code(), cleanup_message),
+            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+        )),
+        Ok(status) => append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            &pdf_path.to_string_lossy(),
+            file_size,
+            header,
+            false,
+            &format!("PDFtoPrinter termino con error. Exit code: {:?}. {}.", status.code(), cleanup_message),
+            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+        )),
+        Err(error) => append_and_return_log(printer_result(
+            &test_type,
+            method,
+            trimmed_printer,
+            &pdf_path.to_string_lossy(),
+            file_size,
+            header,
+            false,
+            &format!("PDFtoPrinter no termino correctamente. {}.", cleanup_message),
+            Some(format!("{error} | Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+        )),
+    }
+}
+
+#[tauri::command]
 fn print_test_pdf_to_printer(printer_name: String, file_name: String, bytes: Vec<u8>) -> PrinterTestResult {
     let created_at = unix_timestamp().to_string();
     let method = "jsPDF -> archivo PDF -> rust-printers PDF o Windows Shell PrintTo".to_string();
@@ -1032,6 +1338,7 @@ pub fn run() {
             print_pdf_windows,
             print_pdf_to_printer,
             print_pdf_sumatra,
+            print_pdf_pdftoprinter,
             print_test_pdf_to_printer,
             print_escpos_windows,
             print_test_escpos,
