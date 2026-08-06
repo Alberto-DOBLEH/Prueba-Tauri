@@ -227,6 +227,7 @@ Opciones futuras discutidas:
 - Empaquetar SumatraPDF portable dentro del instalador Tauri y usar `-print-to "IMPRESORA" -silent archivo.pdf`.
 - Implementar impresion nativa con WebView2/Win32 desde Rust.
 - Renderizar PDF/HTML a imagen y mandar a Win32 print.
+- Branch experimental `feature/native-gdi-image-printing`: prueba `HTML -> html2canvas PNG -> Win32 GDI -> driver Windows` con comando `print_image_windows` y boton `Probar imagen nativa GDI`.
 
 Branch experimental Sumatra:
 

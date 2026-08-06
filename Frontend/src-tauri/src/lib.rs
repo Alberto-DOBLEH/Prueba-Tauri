@@ -7,6 +7,14 @@ use printers::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateDCW, DeleteDC, GetDeviceCaps, SetStretchBltMode, StretchDIBits, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HORZRES, LOGPIXELSX, LOGPIXELSY,
+    SRCCOPY, VERTRES,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::Xps::{EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
 
 #[derive(Serialize)]
 struct SystemPrinterInfo {
@@ -165,6 +173,11 @@ fn file_header(bytes: &[u8]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&bytes[..bytes.len().min(4)]).to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn base64_value(byte: u8) -> Option<u8> {
@@ -1022,6 +1035,186 @@ fn print_escpos_windows(printer_share: String, bytes: Vec<u8>) -> Result<String,
     }
 }
 
+#[cfg(target_os = "windows")]
+fn print_png_with_gdi(printer_name: &str, job_name: &str, bytes: &[u8]) -> Result<i32, String> {
+    let printer = if printer_name.trim().is_empty() {
+        get_default_printer().ok_or_else(|| "No hay impresora predeterminada configurada.".to_string())?.system_name
+    } else {
+        find_printer(printer_name)?.system_name
+    };
+
+    let image = image::load_from_memory(bytes).map_err(|error| format!("No se pudo decodificar PNG: {error}"))?.to_rgba8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Err("La imagen generada para imprimir esta vacia.".into());
+    }
+
+    let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+    for pixel in image.pixels() {
+        bgra.push(pixel[2]);
+        bgra.push(pixel[1]);
+        bgra.push(pixel[0]);
+        bgra.push(pixel[3]);
+    }
+
+    let driver = wide_null("WINSPOOL");
+    let printer_wide = wide_null(&printer);
+    let job_wide = wide_null(job_name);
+
+    unsafe {
+        let hdc = CreateDCW(driver.as_ptr(), printer_wide.as_ptr(), std::ptr::null(), std::ptr::null());
+        if hdc.is_null() {
+            return Err(format!("CreateDCW fallo para la impresora: {printer}"));
+        }
+
+        let doc_info = DOCINFOW {
+            cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+            lpszDocName: job_wide.as_ptr(),
+            lpszOutput: std::ptr::null(),
+            lpszDatatype: std::ptr::null(),
+            fwType: 0,
+        };
+
+        let job_id = StartDocW(hdc, &doc_info);
+        if job_id <= 0 {
+            DeleteDC(hdc);
+            return Err(format!("StartDocW fallo para la impresora: {printer}"));
+        }
+
+        if StartPage(hdc) <= 0 {
+            EndDoc(hdc);
+            DeleteDC(hdc);
+            return Err("StartPage fallo al iniciar pagina GDI.".into());
+        }
+
+        let printable_width = GetDeviceCaps(hdc, HORZRES).max(1);
+        let printable_height = GetDeviceCaps(hdc, VERTRES).max(1);
+        let dpi_x = GetDeviceCaps(hdc, LOGPIXELSX).max(96);
+        let dpi_y = GetDeviceCaps(hdc, LOGPIXELSY).max(96);
+        let margin_x = (dpi_x as f32 * 0.25).round() as i32;
+        let margin_y = (dpi_y as f32 * 0.25).round() as i32;
+        let target_width = (printable_width - margin_x * 2).max(1);
+        let target_height = (printable_height - margin_y * 2).max(1);
+        let scale = (target_width as f32 / width as f32).min(target_height as f32 / height as f32);
+        let draw_width = (width as f32 * scale).round().max(1.0) as i32;
+        let draw_height = (height as f32 * scale).round().max(1.0) as i32;
+        let draw_x = margin_x + ((target_width - draw_width) / 2).max(0);
+        let draw_y = margin_y;
+
+        let mut bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: bgra.len() as u32,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [std::mem::zeroed(); 1],
+        };
+
+        SetStretchBltMode(hdc, HALFTONE as i32);
+        let result = StretchDIBits(
+            hdc,
+            draw_x,
+            draw_y,
+            draw_width,
+            draw_height,
+            0,
+            0,
+            width as i32,
+            height as i32,
+            bgra.as_ptr() as *const std::ffi::c_void,
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+
+        if result == 0 {
+            EndPage(hdc);
+            EndDoc(hdc);
+            DeleteDC(hdc);
+            return Err("StretchDIBits no dibujo la imagen en el contexto de impresion.".into());
+        }
+
+        if EndPage(hdc) <= 0 {
+            EndDoc(hdc);
+            DeleteDC(hdc);
+            return Err("EndPage fallo al finalizar pagina GDI.".into());
+        }
+
+        if EndDoc(hdc) <= 0 {
+            DeleteDC(hdc);
+            return Err("EndDoc fallo al enviar trabajo GDI al spooler.".into());
+        }
+
+        DeleteDC(hdc);
+        Ok(job_id)
+    }
+}
+
+#[tauri::command]
+fn print_image_windows(printer_name: String, file_name: String, bytes: Vec<u8>, width_px: u32, height_px: u32) -> PrinterTestResult {
+    let method = "HTML -> html2canvas PNG -> Win32 GDI -> driver Windows";
+    let path = printer_test_path("native-image", "png");
+    let (file_path, save_error) = match path {
+        Ok(path) => match fs::write(&path, &bytes) {
+            Ok(()) => (path.to_string_lossy().to_string(), None),
+            Err(error) => (path.to_string_lossy().to_string(), Some(error.to_string())),
+        },
+        Err(error) => (String::new(), Some(error)),
+    };
+    let job_name = if file_name.trim().is_empty() { "POS Local Imagen Nativa" } else { file_name.trim() };
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = job_name;
+
+    #[cfg(target_os = "windows")]
+    let print_result = print_png_with_gdi(&printer_name, job_name, &bytes);
+
+    #[cfg(not(target_os = "windows"))]
+    let print_result: Result<i32, String> = Err("La impresion nativa GDI solo esta disponible en Windows.".into());
+
+    let mut result = match print_result {
+        Ok(job_id) => printer_result(
+            "html-image-gdi-test",
+            method,
+            if printer_name.trim().is_empty() { "Predeterminada" } else { printer_name.trim() },
+            &file_path,
+            bytes.len() as u64,
+            file_header(&bytes),
+            true,
+            &format!("Imagen {}x{} enviada al driver Windows con GDI. Job: {}.", width_px, height_px, job_id),
+            save_error.map(|error| format!("La impresion fue aceptada, pero fallo guardar PNG de evidencia: {error}")),
+        ),
+        Err(error) => printer_result(
+            "html-image-gdi-test",
+            method,
+            if printer_name.trim().is_empty() { "Predeterminada" } else { printer_name.trim() },
+            &file_path,
+            bytes.len() as u64,
+            file_header(&bytes),
+            false,
+            &format!("No se pudo imprimir imagen {}x{} con GDI.", width_px, height_px),
+            Some(match save_error {
+                Some(save_error) => format!("{error} | Ademas fallo guardar PNG: {save_error}"),
+                None => error,
+            }),
+        ),
+    };
+
+    if let Err(error) = append_printer_test_log(&result) {
+        result.success = false;
+        result.message = format!("{} Ademas fallo guardar log: {error}", result.message);
+    }
+    result
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1038,7 +1231,8 @@ pub fn run() {
             get_printer_test_logs,
             add_printer_test_log,
             open_printer_test_folder,
-            print_sale_escpos
+            print_sale_escpos,
+            print_image_windows
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

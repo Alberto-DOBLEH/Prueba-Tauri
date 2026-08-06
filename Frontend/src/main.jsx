@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
+import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import './styles.css';
 
@@ -410,6 +411,48 @@ function printPrintableDocument(title, documentData, logContext = {}) {
   };
 }
 
+function canvasToPngBytes(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        reject(new Error('No se pudo convertir el canvas a PNG.'));
+        return;
+      }
+      resolve(new Uint8Array(await blob.arrayBuffer()));
+    }, 'image/png');
+  });
+}
+
+async function renderPrintableDocumentPng(title, documentData) {
+  const previousFrame = document.querySelector('.native-image-render-frame');
+  previousFrame?.remove();
+
+  const frame = document.createElement('iframe');
+  frame.className = 'native-image-render-frame';
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.top = '0';
+  frame.style.width = '816px';
+  frame.style.height = '1056px';
+  frame.style.border = '0';
+  frame.srcdoc = printableDocumentHtml(title, documentData);
+  document.body.appendChild(frame);
+
+  try {
+    await new Promise((resolve, reject) => {
+      frame.onload = resolve;
+      frame.onerror = () => reject(new Error('No se pudo cargar HTML para render nativo.'));
+    });
+    const body = frame.contentDocument?.body;
+    if (!body) throw new Error('No se pudo acceder al documento imprimible.');
+    const canvas = await html2canvas(body, { backgroundColor: '#ffffff', scale: 2, useCORS: true });
+    const bytes = await canvasToPngBytes(canvas);
+    return { bytes, width: canvas.width, height: canvas.height };
+  } finally {
+    frame.remove();
+  }
+}
+
 async function printPdfWithSumatraOrFallback(title, documentData, fileName, bytes, filePath, printSettings, testType = 'pdf-sumatra') {
   const printerName = printSettings.pdfPrinterName || '';
   const header = String.fromCharCode(...bytes.slice(0, 4));
@@ -749,6 +792,55 @@ function PrintersSection({ printSettings, setPrintSettings }) {
     }
   };
 
+  const testNativeImagePrinter = async () => {
+    try {
+      const documentData = {
+        folio: 'PRUEBA-GDI',
+        total: 1234.56,
+        items: [
+          { sku: 'TXT', name: 'Texto normal para validar render HTML a imagen', quantity: 1, price: 10, total: 10 },
+          { sku: 'TAB', name: 'Fila de tabla con bordes y cantidades', quantity: 2, price: 25.5, total: 51 },
+          { sku: 'MAR', name: 'Contenido cercano a margenes de pagina carta', quantity: 3, price: 391.19, total: 1173.56 }
+        ]
+      };
+      await logPrinterEvent({
+        testType: 'html-image-gdi-test',
+        method: 'HTML -> html2canvas PNG -> Win32 GDI -> driver Windows',
+        printerName: printSettings.pdfPrinterName || 'Predeterminada',
+        filePath: '',
+        fileSize: 0,
+        header: null,
+        success: true,
+        jobId: null,
+        message: 'Preparando render HTML a PNG para prueba GDI nativa.',
+        error: null
+      });
+      const rendered = await renderPrintableDocumentPng('Prueba impresion nativa GDI', documentData);
+      const result = await invoke('print_image_windows', {
+        printerName: printSettings.pdfPrinterName || '',
+        fileName: 'prueba-imagen-nativa-gdi.png',
+        bytes: Array.from(rendered.bytes),
+        widthPx: rendered.width,
+        heightPx: rendered.height
+      });
+      showResult(result);
+    } catch (error) {
+      await logPrinterEvent({
+        testType: 'html-image-gdi-test',
+        method: 'HTML -> html2canvas PNG -> Win32 GDI -> driver Windows',
+        printerName: printSettings.pdfPrinterName || 'Predeterminada',
+        filePath: '',
+        fileSize: 0,
+        header: null,
+        success: false,
+        jobId: null,
+        message: 'Fallo la prueba de impresion nativa por imagen GDI.',
+        error: String(error)
+      });
+      setMessage(String(error));
+    }
+  };
+
   const testEscpos = async () => {
     try {
       if (!printSettings.thermalPrinterName) throw new Error('Selecciona una impresora termica ESC/POS.');
@@ -771,7 +863,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   return <section>
     <h2>Impresoras</h2>
     <div className="print-settings">
-      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; SumatraPDF portable -&gt; impresion silenciosa</code> con fallback WebView2. ESC/POS: <code>tk-raw.txt -&gt; .escpos -&gt; RAW spooler</code>.</p>
+      <p>Modulo aislado para probar impresion desde Tauri. PDF: <code>PDF guardado -&gt; SumatraPDF portable -&gt; impresion silenciosa</code> con fallback WebView2. Imagen: <code>HTML -&gt; PNG -&gt; GDI nativo</code>. ESC/POS: <code>tk-raw.txt -&gt; .escpos -&gt; RAW spooler</code>.</p>
       <button onClick={loadPrinters}>Detectar impresoras</button>
       <label>Impresora para PDFs silenciosos</label>
       <select value={printSettings.pdfPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, pdfPrinterName: event.target.value })}>
@@ -785,6 +877,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
       </select>
       <div className="actions">
         <button onClick={testPdfPrinter}>Probar impresion documento</button>
+        <button className="secondary" onClick={testNativeImagePrinter}>Probar imagen nativa GDI</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
         <button className="secondary" onClick={openTestFolder}>Abrir carpeta pruebas</button>
         <button className="secondary" onClick={loadLogs}>Ver logs</button>
