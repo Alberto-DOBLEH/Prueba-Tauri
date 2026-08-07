@@ -15,7 +15,7 @@ Este documento debe tratarse como la referencia rapida y actualizada para agente
 
 ## Estado Actual
 
-- Version actual de app: `1.0.11`.
+- Version actual de app: `1.0.12`.
 - Rama principal usada: `main`.
 - Remoto: `origin git@github.com:Alberto-DOBLEH/Prueba-Tauri.git`.
 - La app Tauri instalada todavia espera que el backend este corriendo en `http://localhost:3001`.
@@ -151,7 +151,7 @@ Config: `Frontend/src-tauri/tauri.conf.json`.
 Puntos clave:
 
 - `productName`: `POS Local`.
-- `version`: actualmente `1.0.11`.
+- `version`: actualmente `1.0.12`.
 - `identifier`: `com.pruebas.poslocal`.
 - En dev usa `http://127.0.0.1:5173`.
 - En build usa `Frontend/dist`.
