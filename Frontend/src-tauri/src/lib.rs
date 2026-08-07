@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{Read, Write},
     path::PathBuf,
@@ -73,6 +74,37 @@ struct PrinterLogPayload {
     success: bool,
     job_id: Option<u64>,
     message: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PdfToPrinterCandidate {
+    path: String,
+    source: String,
+    exists: bool,
+    file_size: Option<u64>,
+    can_open: bool,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PdfToPrinterResolution {
+    selected: Option<PdfToPrinterCandidate>,
+    candidates: Vec<PdfToPrinterCandidate>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfTraceEvent {
+    created_at: String,
+    trace_id: String,
+    flow: String,
+    step: String,
+    success: bool,
+    message: String,
+    data: serde_json::Value,
     error: Option<String>,
 }
 
@@ -163,6 +195,42 @@ fn append_printer_test_log(result: &PrinterTestResult) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let line = serde_json::to_string(result).map_err(|error| error.to_string())?;
     writeln!(file, "{line}").map_err(|error| error.to_string())
+}
+
+fn pdf_trace_log_path() -> Result<PathBuf, String> {
+    let mut path = printer_tests_dir()?;
+    path.push("pdf-print-trace.log.jsonl");
+    Ok(path)
+}
+
+fn append_pdf_trace_log(
+    trace_id: &str,
+    step: &str,
+    success: bool,
+    message: &str,
+    data: serde_json::Value,
+    error: Option<String>,
+) {
+    let event = PdfTraceEvent {
+        created_at: unix_timestamp().to_string(),
+        trace_id: trace_id.to_string(),
+        flow: "pdftoprinter".into(),
+        step: step.into(),
+        success,
+        message: message.into(),
+        data,
+        error,
+    };
+
+    let Ok(path) = pdf_trace_log_path() else {
+        return;
+    };
+    let Ok(mut file) = fs::OpenOptions::new().append(true).create(true).open(&path) else {
+        return;
+    };
+    if let Ok(line) = serde_json::to_string(&event) {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 fn record_printer_log(payload: PrinterLogPayload) -> Result<PrinterTestResult, String> {
@@ -359,43 +427,154 @@ fn find_sumatra_pdf(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Err(format!("No se encontro SumatraPDF portable empaquetado. Rutas revisadas: {checked}"))
 }
 
-fn pdftoprinter_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+fn add_pdftoprinter_candidate(candidates: &mut Vec<(String, PathBuf)>, seen: &mut HashSet<String>, source: &str, path: PathBuf) {
+    let key = path.to_string_lossy().to_ascii_lowercase();
+    if seen.insert(key) {
+        candidates.push((source.into(), path));
+    }
+}
+
+fn pdftoprinter_candidate_paths(app: &tauri::AppHandle, manual_path: Option<&str>) -> Vec<(String, PathBuf)> {
     let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(path) = manual_path.map(str::trim).filter(|path| !path.is_empty()) {
+        add_pdftoprinter_candidate(&mut candidates, &mut seen, "manual", PathBuf::from(path));
+    }
+
+    if let Ok(path) = std::env::var("POS_PDFTOPRINTER_PATH") {
+        if !path.trim().is_empty() {
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, "env", PathBuf::from(path.trim()));
+        }
+    }
+
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        let base = PathBuf::from(user_profile);
+        for folder in ["Desktop", "Escritorio", "Downloads", "Descargas", "Documents", "Documentos"] {
+            let dir = base.join(folder);
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, &folder.to_ascii_lowercase(), dir.join("PDFtoPrinter.exe"));
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, &format!("{}-subdir", folder.to_ascii_lowercase()), dir.join("PDFtoPrinter").join("PDFtoPrinter.exe"));
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let base = PathBuf::from(home);
+        for folder in ["Desktop", "Escritorio", "Downloads", "Descargas", "Documents", "Documentos"] {
+            let dir = base.join(folder);
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, &folder.to_ascii_lowercase(), dir.join("PDFtoPrinter.exe"));
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, &format!("{}-subdir", folder.to_ascii_lowercase()), dir.join("PDFtoPrinter").join("PDFtoPrinter.exe"));
+        }
+    }
+
+    for path in [
+        r"C:\PDFtoPrinter\PDFtoPrinter.exe",
+        r"C:\Tools\PDFtoPrinter\PDFtoPrinter.exe",
+        r"C:\Malova\PDFtoPrinter\PDFtoPrinter.exe",
+    ] {
+        add_pdftoprinter_candidate(&mut candidates, &mut seen, "common", PathBuf::from(path));
+    }
+
     if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
-        candidates.push(resource_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
-        candidates.push(resource_dir.join("PDFtoPrinter.exe"));
+        add_pdftoprinter_candidate(&mut candidates, &mut seen, "packaged", resource_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
+        add_pdftoprinter_candidate(&mut candidates, &mut seen, "packaged", resource_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
+        add_pdftoprinter_candidate(&mut candidates, &mut seen, "packaged", resource_dir.join("PDFtoPrinter.exe"));
     }
 
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(app_dir) = current_exe.parent() {
-            candidates.push(app_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
-            candidates.push(app_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, "packaged", app_dir.join("resources").join("pdftoprinter").join("PDFtoPrinter.exe"));
+            add_pdftoprinter_candidate(&mut candidates, &mut seen, "packaged", app_dir.join("pdftoprinter").join("PDFtoPrinter.exe"));
         }
     }
 
     candidates
 }
 
-fn find_pdftoprinter(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let candidates = pdftoprinter_candidates(app);
-    candidates
+fn inspect_pdftoprinter_candidate(source: String, path: PathBuf) -> PdfToPrinterCandidate {
+    let exists = path.exists();
+    let metadata = fs::metadata(&path);
+    let (file_size, metadata_error) = match metadata {
+        Ok(metadata) => (Some(metadata.len()), None),
+        Err(error) if exists => (None, Some(error.to_string())),
+        Err(_) => (None, None),
+    };
+    let open_result = fs::File::open(&path);
+    let can_open = open_result.is_ok();
+    let open_error = open_result.err().map(|error| error.to_string());
+    PdfToPrinterCandidate {
+        path: path.to_string_lossy().to_string(),
+        source,
+        exists,
+        file_size,
+        can_open,
+        error: metadata_error.or(open_error),
+    }
+}
+
+fn resolve_pdftoprinter_internal(app: &tauri::AppHandle, manual_path: Option<&str>) -> PdfToPrinterResolution {
+    let candidates = pdftoprinter_candidate_paths(app, manual_path)
+        .into_iter()
+        .map(|(source, path)| inspect_pdftoprinter_candidate(source, path))
+        .collect::<Vec<_>>();
+    let selected = candidates
         .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| {
-            let checked = candidates
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            format!("No se encontro PDFtoPrinter.exe empaquetado. Rutas revisadas: {checked}")
-        })
+        .find(|candidate| candidate.exists && candidate.can_open)
+        .cloned();
+    PdfToPrinterResolution { selected, candidates }
+}
+
+fn find_pdftoprinter(app: &tauri::AppHandle, manual_path: Option<&str>) -> Result<(PathBuf, PdfToPrinterResolution), String> {
+    let resolution = resolve_pdftoprinter_internal(app, manual_path);
+    if let Some(selected) = &resolution.selected {
+        return Ok((PathBuf::from(&selected.path), resolution));
+    }
+
+    let checked = resolution
+        .candidates
+        .iter()
+        .map(|candidate| format!("{}:{}", candidate.source, candidate.path))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Err(format!("No se encontro PDFtoPrinter.exe utilizable. Rutas revisadas: {checked}"))
 }
 
 #[cfg(target_os = "windows")]
 fn escape_powershell_single(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn escape_powershell_single(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn cleanup_pdftoprinter_pdf(pdf_path: &PathBuf, diagnostic: bool, trace_id: &str) -> String {
+    if diagnostic {
+        let diagnostics_dir = printer_tests_dir()
+            .map(|path| path.join("pdf-diagnostics"))
+            .and_then(|path| {
+                fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+                Ok(path)
+            });
+        match diagnostics_dir {
+            Ok(dir) => {
+                let preserved_path = dir.join(format!("pdftoprinter-{trace_id}.pdf"));
+                match fs::copy(pdf_path, &preserved_path) {
+                    Ok(_) => {
+                        let _ = fs::remove_file(pdf_path);
+                        format!("PDF diagnostico conservado en {}", preserved_path.to_string_lossy())
+                    }
+                    Err(error) => format!("No se pudo conservar PDF diagnostico: {error}. PDF temporal: {}", pdf_path.to_string_lossy()),
+                }
+            }
+            Err(error) => format!("No se pudo preparar carpeta diagnostica: {error}. PDF temporal: {}", pdf_path.to_string_lossy()),
+        }
+    } else {
+        match fs::remove_file(pdf_path) {
+            Ok(()) => "PDF temporal eliminado".to_string(),
+            Err(error) => format!("No se pudo eliminar PDF temporal: {error}"),
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -417,6 +596,50 @@ fn windows_print_jobs(printer_name: &str) -> Result<String, String> {
     } else {
         Err(if stderr.is_empty() { "Get-PrintJob fallo sin detalle".into() } else { stderr })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn run_powershell(script: &str) -> serde_json::Value {
+    match Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+    {
+        Ok(output) => serde_json::json!({
+            "command": script,
+            "success": output.status.success(),
+            "exitCode": output.status.code(),
+            "stdout": String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            "stderr": String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        }),
+        Err(error) => serde_json::json!({
+            "command": script,
+            "success": false,
+            "error": error.to_string(),
+        }),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_powershell(script: &str) -> serde_json::Value {
+    serde_json::json!({
+        "command": script,
+        "success": false,
+        "error": "PowerShell diagnostics solo disponibles en Windows",
+    })
+}
+
+fn command_preview(executable: &PathBuf, pdf_path: &PathBuf, printer_name: &str) -> String {
+    format!(
+        "{} \"{}\" \"{}\"",
+        executable.to_string_lossy(),
+        pdf_path.to_string_lossy(),
+        printer_name
+    )
+}
+
+#[tauri::command]
+fn resolve_pdftoprinter(app: tauri::AppHandle, manual_executable_path: Option<String>) -> PdfToPrinterResolution {
+    resolve_pdftoprinter_internal(&app, manual_executable_path.as_deref())
 }
 
 #[cfg(target_os = "windows")]
@@ -872,14 +1095,52 @@ fn print_pdf_pdftoprinter(
     file_name: String,
     bytes: Vec<u8>,
     test_type: Option<String>,
+    manual_executable_path: Option<String>,
+    diagnostic: Option<bool>,
 ) -> PrinterTestResult {
     let method = "PDF bytes -> PDF temporal -> PDFtoPrinter.exe ruta impresora";
     let test_type = test_type.unwrap_or_else(|| "pdf-pdftoprinter".into());
     let header = file_header(&bytes);
     let file_size = bytes.len() as u64;
     let trimmed_printer = printer_name.trim();
+    let diagnostic = diagnostic.unwrap_or(false);
+    let trace_id = format!("pdfpt-{}", unix_timestamp_millis());
+    let trace_log = pdf_trace_log_path()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    append_pdf_trace_log(
+        &trace_id,
+        "start",
+        true,
+        "Inicio flujo PDFtoPrinter.",
+        serde_json::json!({
+            "appVersion": env!("CARGO_PKG_VERSION"),
+            "os": std::env::consts::OS,
+            "user": std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default(),
+            "currentExe": std::env::current_exe().map(|path| path.to_string_lossy().to_string()).unwrap_or_default(),
+            "currentDir": std::env::current_dir().map(|path| path.to_string_lossy().to_string()).unwrap_or_default(),
+            "resourceDir": app.path().resource_dir().map(|path| path.to_string_lossy().to_string()).unwrap_or_default(),
+            "printerName": trimmed_printer,
+            "testType": test_type,
+            "fileName": file_name,
+            "fileSize": file_size,
+            "header": header,
+            "manualExecutablePath": manual_executable_path,
+            "diagnostic": diagnostic,
+        }),
+        None,
+    );
 
     if !cfg!(target_os = "windows") {
+        append_pdf_trace_log(
+            &trace_id,
+            "validate-platform",
+            false,
+            "PDFtoPrinter solo esta disponible en Windows.",
+            serde_json::json!({ "os": std::env::consts::OS }),
+            None,
+        );
         return append_and_return_log(printer_result(
             &test_type,
             method,
@@ -894,6 +1155,14 @@ fn print_pdf_pdftoprinter(
     }
 
     if let Err(error) = validate_pdf_bytes(&bytes) {
+        append_pdf_trace_log(
+            &trace_id,
+            "validate-pdf-bytes",
+            false,
+            "Los bytes recibidos no son PDF valido.",
+            serde_json::json!({ "fileSize": file_size, "header": header }),
+            Some(error.clone()),
+        );
         return append_and_return_log(printer_result(
             &test_type,
             method,
@@ -906,8 +1175,24 @@ fn print_pdf_pdftoprinter(
             Some(error),
         ));
     }
+    append_pdf_trace_log(
+        &trace_id,
+        "validate-pdf-bytes",
+        true,
+        "PDF valido recibido desde frontend.",
+        serde_json::json!({ "fileSize": file_size, "header": header }),
+        None,
+    );
 
     if trimmed_printer.is_empty() {
+        append_pdf_trace_log(
+            &trace_id,
+            "validate-selected-printer",
+            false,
+            "No se selecciono impresora.",
+            serde_json::json!({}),
+            None,
+        );
         return append_and_return_log(printer_result(
             &test_type,
             method,
@@ -923,6 +1208,14 @@ fn print_pdf_pdftoprinter(
 
     #[cfg(target_os = "windows")]
     if let Err(error) = find_printer(trimmed_printer) {
+        append_pdf_trace_log(
+            &trace_id,
+            "validate-selected-printer",
+            false,
+            "La impresora seleccionada no existe en Windows.",
+            serde_json::json!({ "printerName": trimmed_printer }),
+            Some(error.clone()),
+        );
         return append_and_return_log(printer_result(
             &test_type,
             method,
@@ -935,10 +1228,27 @@ fn print_pdf_pdftoprinter(
             Some(error),
         ));
     }
+    append_pdf_trace_log(
+        &trace_id,
+        "validate-selected-printer",
+        true,
+        "La impresora seleccionada existe en Windows.",
+        serde_json::json!({ "printerName": trimmed_printer }),
+        None,
+    );
 
-    let executable = match find_pdftoprinter(&app) {
-        Ok(path) => path,
+    let (executable, resolution) = match find_pdftoprinter(&app, manual_executable_path.as_deref()) {
+        Ok((path, resolution)) => (path, resolution),
         Err(error) => {
+            let resolution = resolve_pdftoprinter_internal(&app, manual_executable_path.as_deref());
+            append_pdf_trace_log(
+                &trace_id,
+                "resolve-executable-candidates",
+                false,
+                "No se encontro PDFtoPrinter.exe utilizable.",
+                serde_json::json!({ "resolution": resolution }),
+                Some(error.clone()),
+            );
             return append_and_return_log(printer_result(
                 &test_type,
                 method,
@@ -947,16 +1257,43 @@ fn print_pdf_pdftoprinter(
                 file_size,
                 header,
                 false,
-                "No se pudo encontrar PDFtoPrinter.exe empaquetado.",
+                "No se pudo encontrar PDFtoPrinter.exe utilizable.",
                 Some(error),
             ));
         }
     };
+    append_pdf_trace_log(
+        &trace_id,
+        "resolve-executable-candidates",
+        true,
+        "Rutas candidatas revisadas para PDFtoPrinter.",
+        serde_json::json!({ "resolution": resolution }),
+        None,
+    );
+    append_pdf_trace_log(
+        &trace_id,
+        "executable-permissions",
+        true,
+        "Permisos del ejecutable PDFtoPrinter.",
+        serde_json::json!({
+            "path": executable.to_string_lossy().to_string(),
+            "icacls": run_powershell(&format!("icacls '{}'", escape_powershell_single(&executable.to_string_lossy()))),
+        }),
+        None,
+    );
 
     let safe_prefix = if file_name.trim().is_empty() { "pdftoprinter" } else { file_name.trim().trim_end_matches(".pdf") };
     let pdf_path = match temp_print_job_path(safe_prefix, "pdf") {
         Ok(path) => path,
         Err(error) => {
+            append_pdf_trace_log(
+                &trace_id,
+                "write-temp-pdf",
+                false,
+                "No se pudo crear ruta temporal para PDFtoPrinter.",
+                serde_json::json!({}),
+                Some(error.clone()),
+            );
             return append_and_return_log(printer_result(
                 &test_type,
                 method,
@@ -972,6 +1309,14 @@ fn print_pdf_pdftoprinter(
     };
 
     if let Err(error) = fs::write(&pdf_path, &bytes) {
+        append_pdf_trace_log(
+            &trace_id,
+            "write-temp-pdf",
+            false,
+            "No se pudo escribir PDF temporal.",
+            serde_json::json!({ "pdfPath": pdf_path.to_string_lossy().to_string() }),
+            Some(error.to_string()),
+        );
         return append_and_return_log(printer_result(
             &test_type,
             method,
@@ -984,16 +1329,76 @@ fn print_pdf_pdftoprinter(
             Some(error.to_string()),
         ));
     }
+    let disk_bytes = fs::read(&pdf_path).unwrap_or_default();
+    append_pdf_trace_log(
+        &trace_id,
+        "write-temp-pdf",
+        true,
+        "PDF temporal escrito y reabierto correctamente.",
+        serde_json::json!({
+            "pdfPath": pdf_path.to_string_lossy().to_string(),
+            "metadataSize": fs::metadata(&pdf_path).map(|metadata| metadata.len()).unwrap_or_default(),
+            "readBackSize": disk_bytes.len(),
+            "readBackHeader": file_header(&disk_bytes),
+        }),
+        None,
+    );
+    append_pdf_trace_log(
+        &trace_id,
+        "temp-pdf-permissions",
+        true,
+        "Permisos del PDF temporal.",
+        serde_json::json!({
+            "pdfPath": pdf_path.to_string_lossy().to_string(),
+            "icacls": run_powershell(&format!("icacls '{}'", escape_powershell_single(&pdf_path.to_string_lossy()))),
+        }),
+        None,
+    );
 
-    let command_line = format!(
-        "{} \"{}\" \"{}\"",
-        executable.to_string_lossy(),
-        pdf_path.to_string_lossy(),
-        trimmed_printer
+    #[cfg(target_os = "windows")]
+    let detected_printers = list_system_printers();
+    #[cfg(not(target_os = "windows"))]
+    let detected_printers: Vec<SystemPrinterInfo> = Vec::new();
+    append_pdf_trace_log(
+        &trace_id,
+        "list-printers",
+        true,
+        "Impresoras detectadas antes de imprimir.",
+        serde_json::json!({ "count": detected_printers.len(), "printers": detected_printers }),
+        None,
+    );
+    append_pdf_trace_log(
+        &trace_id,
+        "windows-printer-diagnostics",
+        true,
+        "Diagnostico PowerShell de impresora.",
+        serde_json::json!({
+            "allPrinters": run_powershell("Get-Printer | Select Name,DriverName,PortName,PrinterStatus,JobCount,Shared | ConvertTo-Json -Compress"),
+            "selectedPrinter": run_powershell(&format!("Get-Printer -Name '{}' | Format-List *", escape_powershell_single(trimmed_printer))),
+            "ports": run_powershell("Get-PrinterPort | ConvertTo-Json -Compress"),
+        }),
+        None,
+    );
+
+    let command_line = command_preview(&executable, &pdf_path, trimmed_printer);
+    append_pdf_trace_log(
+        &trace_id,
+        "before-process-start",
+        true,
+        "Comando preparado para PDFtoPrinter.",
+        serde_json::json!({
+            "command": command_line,
+            "executable": executable.to_string_lossy().to_string(),
+            "pdfPath": pdf_path.to_string_lossy().to_string(),
+            "printerName": trimmed_printer,
+            "workingDir": executable.parent().map(|path| path.to_string_lossy().to_string()),
+        }),
+        None,
     );
     let mut child = match Command::new(&executable)
         .arg(&pdf_path)
         .arg(trimmed_printer)
+        .current_dir(executable.parent().unwrap_or_else(|| std::path::Path::new(".")))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1001,7 +1406,15 @@ fn print_pdf_pdftoprinter(
     {
         Ok(child) => child,
         Err(error) => {
-            let _ = fs::remove_file(&pdf_path);
+            append_pdf_trace_log(
+                &trace_id,
+                "process-started",
+                false,
+                "No se pudo iniciar PDFtoPrinter.exe.",
+                serde_json::json!({ "command": command_line }),
+                Some(error.to_string()),
+            );
+            let cleanup_message = cleanup_pdftoprinter_pdf(&pdf_path, diagnostic, &trace_id);
             return append_and_return_log(printer_result(
                 &test_type,
                 method,
@@ -1010,14 +1423,22 @@ fn print_pdf_pdftoprinter(
                 file_size,
                 header,
                 false,
-                "No se pudo iniciar PDFtoPrinter.exe.",
-                Some(format!("{error} | Comando: {command_line}")),
+                &format!("No se pudo iniciar PDFtoPrinter.exe. Trace: {trace_id}. {cleanup_message}"),
+                Some(format!("{error} | Comando: {command_line} | Trace log: {trace_log}")),
             ));
         }
     };
 
     let timeout = Duration::from_secs(45);
     let started = SystemTime::now();
+    append_pdf_trace_log(
+        &trace_id,
+        "process-started",
+        true,
+        "PDFtoPrinter.exe iniciado.",
+        serde_json::json!({ "pid": child.id(), "timeoutSeconds": timeout.as_secs() }),
+        None,
+    );
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
@@ -1037,11 +1458,61 @@ fn print_pdf_pdftoprinter(
 
     let stdout = read_optional_pipe(child.stdout.take());
     let stderr = read_optional_pipe(child.stderr.take());
-    let cleanup = fs::remove_file(&pdf_path).map_err(|error| error.to_string());
-    let cleanup_message = match cleanup {
-        Ok(()) => "PDF temporal eliminado".to_string(),
-        Err(error) => format!("No se pudo eliminar PDF temporal: {error}"),
-    };
+    let elapsed_ms = SystemTime::now().duration_since(started).unwrap_or_default().as_millis();
+    append_pdf_trace_log(
+        &trace_id,
+        "process-finished",
+        status.as_ref().map(|status| status.success()).unwrap_or(false) && !timed_out,
+        "PDFtoPrinter.exe termino o fue detenido.",
+        serde_json::json!({
+            "elapsedMs": elapsed_ms,
+            "timedOut": timed_out,
+            "exitCode": status.as_ref().ok().and_then(|status| status.code()),
+            "stdout": stdout,
+            "stderr": stderr,
+        }),
+        status.as_ref().err().cloned(),
+    );
+    append_pdf_trace_log(
+        &trace_id,
+        "print-jobs-after",
+        true,
+        "Cola de impresion justo despues de PDFtoPrinter.",
+        serde_json::json!({
+            "jobs": run_powershell(&format!("Get-PrintJob -PrinterName '{}' | ConvertTo-Json -Compress", escape_powershell_single(trimmed_printer)))
+        }),
+        None,
+    );
+    thread::sleep(Duration::from_secs(3));
+    append_pdf_trace_log(
+        &trace_id,
+        "print-jobs-after-delay",
+        true,
+        "Cola de impresion 3 segundos despues.",
+        serde_json::json!({
+            "jobs": run_powershell(&format!("Get-PrintJob -PrinterName '{}' | ConvertTo-Json -Compress", escape_powershell_single(trimmed_printer)))
+        }),
+        None,
+    );
+    append_pdf_trace_log(
+        &trace_id,
+        "windows-printservice-events",
+        true,
+        "Ultimos eventos Windows PrintService Operational.",
+        serde_json::json!({
+            "events": run_powershell("Get-WinEvent -LogName Microsoft-Windows-PrintService/Operational -MaxEvents 20 | Select TimeCreated,Id,LevelDisplayName,ProviderName,Message | ConvertTo-Json -Compress")
+        }),
+        None,
+    );
+    let cleanup_message = cleanup_pdftoprinter_pdf(&pdf_path, diagnostic, &trace_id);
+    append_pdf_trace_log(
+        &trace_id,
+        "finish",
+        status.as_ref().map(|status| status.success()).unwrap_or(false) && !timed_out,
+        "Fin flujo PDFtoPrinter.",
+        serde_json::json!({ "cleanup": cleanup_message, "traceLog": trace_log }),
+        None,
+    );
 
     match status {
         Ok(status) if status.success() => append_and_return_log(printer_result(
@@ -1052,11 +1523,11 @@ fn print_pdf_pdftoprinter(
             file_size,
             header,
             true,
-            &format!("PDFtoPrinter termino OK. {}. Comando: {}", cleanup_message, command_line),
+            &format!("PDFtoPrinter termino OK. Trace: {trace_id}. {}. Comando: {}", cleanup_message, command_line),
             if stdout.is_empty() && stderr.is_empty() {
-                None
+                Some(format!("Trace log: {trace_log}"))
             } else {
-                Some(format!("stdout: {stdout} | stderr: {stderr}"))
+                Some(format!("stdout: {stdout} | stderr: {stderr} | Trace log: {trace_log}"))
             },
         )),
         Ok(status) if timed_out => append_and_return_log(printer_result(
@@ -1067,8 +1538,8 @@ fn print_pdf_pdftoprinter(
             file_size,
             header,
             false,
-            &format!("PDFtoPrinter supero timeout de {} segundos y fue terminado. Exit code: {:?}. {}.", timeout.as_secs(), status.code(), cleanup_message),
-            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+            &format!("PDFtoPrinter supero timeout de {} segundos y fue terminado. Trace: {trace_id}. Exit code: {:?}. {}.", timeout.as_secs(), status.code(), cleanup_message),
+            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr} | Trace log: {trace_log}")),
         )),
         Ok(status) => append_and_return_log(printer_result(
             &test_type,
@@ -1078,8 +1549,8 @@ fn print_pdf_pdftoprinter(
             file_size,
             header,
             false,
-            &format!("PDFtoPrinter termino con error. Exit code: {:?}. {}.", status.code(), cleanup_message),
-            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+            &format!("PDFtoPrinter termino con error. Trace: {trace_id}. Exit code: {:?}. {}.", status.code(), cleanup_message),
+            Some(format!("Comando: {command_line} | stdout: {stdout} | stderr: {stderr} | Trace log: {trace_log}")),
         )),
         Err(error) => append_and_return_log(printer_result(
             &test_type,
@@ -1089,8 +1560,8 @@ fn print_pdf_pdftoprinter(
             file_size,
             header,
             false,
-            &format!("PDFtoPrinter no termino correctamente. {}.", cleanup_message),
-            Some(format!("{error} | Comando: {command_line} | stdout: {stdout} | stderr: {stderr}")),
+            &format!("PDFtoPrinter no termino correctamente. Trace: {trace_id}. {}.", cleanup_message),
+            Some(format!("{error} | Comando: {command_line} | stdout: {stdout} | stderr: {stderr} | Trace log: {trace_log}")),
         )),
     }
 }
@@ -1338,6 +1809,7 @@ pub fn run() {
             print_pdf_windows,
             print_pdf_to_printer,
             print_pdf_sumatra,
+            resolve_pdftoprinter,
             print_pdf_pdftoprinter,
             print_test_pdf_to_printer,
             print_escpos_windows,

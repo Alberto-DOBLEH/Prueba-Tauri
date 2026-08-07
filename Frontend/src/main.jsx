@@ -7,7 +7,7 @@ import './styles.css';
 const API = 'http://localhost:3001/api';
 const currency = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' });
 const isTauri = () => Boolean(window.__TAURI_INTERNALS__);
-const defaultPrintSettings = { pdfPrinterName: '', thermalPrinterName: '', thermalPrinterShare: '', autoPrintPdf: true };
+const defaultPrintSettings = { pdfPrinterName: '', thermalPrinterName: '', thermalPrinterShare: '', autoPrintPdf: true, pdfToPrinterPath: '' };
 const printerLogsChangedEvent = 'pos-printer-logs-changed';
 
 function notifyPrinterLogsChanged() {
@@ -666,6 +666,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   const [printers, setPrinters] = useState([]);
   const [message, setMessage] = useState('');
   const [logs, setLogs] = useState([]);
+  const [pdfToPrinterResolution, setPdfToPrinterResolution] = useState(null);
 
   const loadPrinters = async () => {
     try {
@@ -709,6 +710,26 @@ function PrintersSection({ printSettings, setPrintSettings }) {
   const showResult = (result) => {
     setMessage(`${result.success ? 'OK' : 'ERROR'} | ${result.message}${result.error ? ` | ${result.error}` : ''}`);
     loadLogs();
+  };
+
+  const detectPdfToPrinter = async () => {
+    try {
+      if (!isTauri()) {
+        setMessage('La deteccion de PDFtoPrinter solo funciona dentro de Tauri.');
+        return;
+      }
+      const resolution = await invoke('resolve_pdftoprinter', {
+        manualExecutablePath: printSettings.pdfToPrinterPath || null
+      });
+      setPdfToPrinterResolution(resolution);
+      if (resolution.selected) {
+        setMessage(`PDFtoPrinter detectado (${resolution.selected.source}): ${resolution.selected.path}`);
+      } else {
+        setMessage(`No se encontro PDFtoPrinter utilizable. Rutas revisadas: ${resolution.candidates.length}`);
+      }
+    } catch (error) {
+      setMessage(String(error));
+    }
   };
 
   const testPdfPrinter = async () => {
@@ -757,7 +778,9 @@ function PrintersSection({ printSettings, setPrintSettings }) {
         printerName: printSettings.pdfPrinterName,
         fileName: 'prueba-pdftoprinter.pdf',
         bytes: Array.from(bytes),
-        testType: 'pdf-pdftoprinter-test'
+        testType: 'pdf-pdftoprinter-test',
+        manualExecutablePath: printSettings.pdfToPrinterPath || null,
+        diagnostic: false
       });
       showResult(result);
     } catch (error) {
@@ -771,6 +794,36 @@ function PrintersSection({ printSettings, setPrintSettings }) {
         success: false,
         jobId: null,
         message: 'Fallo la prueba de impresion con PDFtoPrinter.',
+        error: String(error)
+      });
+      setMessage(String(error));
+    }
+  };
+
+  const diagnosePdfToPrinter = async () => {
+    try {
+      if (!printSettings.pdfPrinterName) throw new Error('Selecciona una impresora para diagnosticar PDFtoPrinter.');
+      const bytes = testPdfBytes();
+      const result = await invoke('print_pdf_pdftoprinter', {
+        printerName: printSettings.pdfPrinterName,
+        fileName: 'diagnostico-pdftoprinter.pdf',
+        bytes: Array.from(bytes),
+        testType: 'pdf-pdftoprinter-diagnostic',
+        manualExecutablePath: printSettings.pdfToPrinterPath || null,
+        diagnostic: true
+      });
+      showResult(result);
+    } catch (error) {
+      await logPrinterEvent({
+        testType: 'pdf-pdftoprinter-diagnostic',
+        method: 'Diagnostico PDFtoPrinter con trace detallado',
+        printerName: printSettings.pdfPrinterName || 'Sin impresora',
+        filePath: '',
+        fileSize: 0,
+        header: null,
+        success: false,
+        jobId: null,
+        message: 'Fallo el diagnostico de impresion con PDFtoPrinter.',
         error: String(error)
       });
       setMessage(String(error));
@@ -806,6 +859,10 @@ function PrintersSection({ printSettings, setPrintSettings }) {
         <option value="">Selecciona impresora PDF</option>
         {printers.map((printer) => <option key={`pdf-${printer.system_name}`} value={printer.system_name}>{printer.name} {printer.is_default ? '(predeterminada)' : ''}</option>)}
       </select>
+      <label>Ruta manual PDFtoPrinter.exe (opcional)</label>
+      <input value={printSettings.pdfToPrinterPath || ''} onChange={(event) => setPrintSettings({ ...printSettings, pdfToPrinterPath: event.target.value })} placeholder="Ej. C:\\Users\\Usuario\\Desktop\\PDFtoPrinter.exe" />
+      {pdfToPrinterResolution?.selected && <p className="message">PDFtoPrinter activo: <code>{pdfToPrinterResolution.selected.path}</code> ({pdfToPrinterResolution.selected.source})</p>}
+      {pdfToPrinterResolution && !pdfToPrinterResolution.selected && <p className="message">PDFtoPrinter no encontrado. Rutas revisadas: {pdfToPrinterResolution.candidates.length}</p>}
       <label>Impresora termica ESC/POS</label>
       <select value={printSettings.thermalPrinterName} onChange={(event) => setPrintSettings({ ...printSettings, thermalPrinterName: event.target.value })}>
         <option value="">Selecciona impresora ESC/POS</option>
@@ -813,7 +870,9 @@ function PrintersSection({ printSettings, setPrintSettings }) {
       </select>
       <div className="actions">
         <button onClick={testPdfPrinter}>Probar impresion documento</button>
+        <button className="secondary" onClick={detectPdfToPrinter}>Detectar PDFtoPrinter</button>
         <button className="secondary" onClick={testPdfToPrinter}>Probar PDFtoPrinter</button>
+        <button className="secondary" onClick={diagnosePdfToPrinter}>Diagnostico PDFtoPrinter</button>
         <button className="secondary" onClick={testEscpos}>Probar ESC/POS</button>
         <button className="secondary" onClick={openTestFolder}>Abrir carpeta pruebas</button>
         <button className="secondary" onClick={loadLogs}>Ver logs</button>
@@ -822,7 +881,7 @@ function PrintersSection({ printSettings, setPrintSettings }) {
     </div>
     <div className="print-settings">
       <h3>Logs de pruebas</h3>
-      <p>Se guardan en <code>Descargas/pos-printer-tests/printer-tests.log.jsonl</code> junto con los PDFs y archivos <code>.escpos</code> generados.</p>
+      <p>Se guardan en <code>Descargas/pos-printer-tests/printer-tests.log.jsonl</code>. El diagnostico PDFtoPrinter genera ademas <code>pdf-print-trace.log.jsonl</code> y conserva el PDF en <code>pdf-diagnostics</code>.</p>
       <div className="table">
         {logs.map((log, index) => <div className="printer-row" key={`${log.created_at}-${index}`}>
           <strong>{log.success ? 'OK' : 'ERROR'} | {log.test_type} | {log.printer_name || 'Sin impresora'}</strong>

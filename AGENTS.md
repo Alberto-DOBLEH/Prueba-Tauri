@@ -15,7 +15,7 @@ Este documento debe tratarse como la referencia rapida y actualizada para agente
 
 ## Estado Actual
 
-- Version actual de app: `1.0.8`.
+- Version actual de app: `1.0.11`.
 - Rama principal usada: `main`.
 - Remoto: `origin git@github.com:Alberto-DOBLEH/Prueba-Tauri.git`.
 - La app Tauri instalada todavia espera que el backend este corriendo en `http://localhost:3001`.
@@ -151,7 +151,7 @@ Config: `Frontend/src-tauri/tauri.conf.json`.
 Puntos clave:
 
 - `productName`: `POS Local`.
-- `version`: actualmente `1.0.8`.
+- `version`: actualmente `1.0.11`.
 - `identifier`: `com.pruebas.poslocal`.
 - En dev usa `http://127.0.0.1:5173`.
 - En build usa `Frontend/dist`.
@@ -244,7 +244,10 @@ Branch experimental PDFtoPrinter:
 - Config Tauri empaqueta `resources/pdftoprinter/*`.
 - Comando Rust: `print_pdf_pdftoprinter`.
 - Flujo: `PDF bytes -> PDF temporal -> PDFtoPrinter.exe "archivo.pdf" "impresora" -> spooler Windows`.
-- El PDF temporal se elimina al terminar el proceso; los logs registran comando, exit code, stdout/stderr y etapa de fallo.
+- Resolucion dinamica: busca primero ruta manual, variable `POS_PDFTOPRINTER_PATH`, Escritorio/Descargas/Documentos y rutas comunes; si no encuentra externo usa el empaquetado.
+- Comando Rust adicional: `resolve_pdftoprinter`, devuelve candidato activo y rutas revisadas.
+- Modo diagnostico: conserva el PDF en `Downloads/pos-printer-tests/pdf-diagnostics/` y genera trace detallado.
+- El PDF temporal se elimina al terminar en modo normal; los logs registran comando, exit code, stdout/stderr, ruta del ejecutable, cola Windows y etapa de fallo.
 
 Condicion del usuario:
 
@@ -261,6 +264,14 @@ Carpeta de logs/evidencias:
 Archivo principal:
 
 - `printer-tests.log.jsonl`
+
+Archivo detallado PDFtoPrinter:
+
+- `pdf-print-trace.log.jsonl`
+
+PDFs conservados por diagnostico PDFtoPrinter:
+
+- `pdf-diagnostics/pdftoprinter-<trace_id>.pdf`
 
 Cada linea es JSON compatible con `PrinterTestResult`:
 
@@ -287,6 +298,7 @@ Actualmente se registran:
 - Ejecucion de `window.print()`.
 - Evento `afterprint`.
 - Fallos por etapa.
+- Diagnostico PDFtoPrinter paso a paso: resolucion de ejecutable, permisos `icacls`, escritura/relectura de PDF temporal, impresoras Windows, `Get-Printer`, `Get-PrinterPort`, `Get-PrintJob`, eventos PrintService, stdout/stderr, exit code y timeout.
 
 Importante: en WebView2/`window.print()`, `success: true` significa que la app proceso la etapa y solicito impresion. No garantiza que el usuario haya hecho clic en Imprimir ni que la impresora fisica haya terminado.
 
